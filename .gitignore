@@ -1,0 +1,7 @@
+# Live mock data: json-server rewrites it on every run.
+# start-mock.cmd creates it from mock/db.seed.json when it is missing.
+hall-booking/mock/db.json
+
+node_modules/
+*.log
+~$*

@@ -1,0 +1,111 @@
+{
+  "components": [
+    {
+      "text": "# Seminar Hall & Lab Booking\nRequest a hall or lab. Bookings are hourly; the slot is checked for conflicts automatically.",
+      "type": "text",
+      "id": "Text_Intro",
+      "layout": { "row": "Row_Intro", "columns": null }
+    },
+    {
+      "label": "Your name",
+      "type": "textfield",
+      "id": "Field_RequesterName",
+      "key": "requesterName",
+      "validate": { "required": true },
+      "layout": { "row": "Row_Requester", "columns": 8 }
+    },
+    {
+      "label": "Email",
+      "type": "textfield",
+      "id": "Field_Email",
+      "key": "email",
+      "validate": { "required": true, "validationType": "email" },
+      "layout": { "row": "Row_Requester", "columns": 8 }
+    },
+    {
+      "label": "Venue",
+      "type": "select",
+      "id": "Field_Venue",
+      "key": "venue",
+      "values": [
+        { "label": "Seminar Hall A", "value": "hall-a" },
+        { "label": "Seminar Hall B", "value": "hall-b" },
+        { "label": "Computer Lab 1", "value": "lab-1" }
+      ],
+      "validate": { "required": true },
+      "layout": { "row": "Row_Venue", "columns": 8 }
+    },
+    {
+      "subtype": "date",
+      "dateLabel": "Booking date",
+      "type": "datetime",
+      "id": "Field_BookingDate",
+      "key": "bookingDate",
+      "validate": { "required": true },
+      "layout": { "row": "Row_Venue", "columns": 8 }
+    },
+    {
+      "label": "Start time",
+      "type": "select",
+      "id": "Field_StartTime",
+      "key": "startTime",
+      "values": [
+        { "label": "08:00", "value": "08:00" },
+        { "label": "09:00", "value": "09:00" },
+        { "label": "10:00", "value": "10:00" },
+        { "label": "11:00", "value": "11:00" },
+        { "label": "12:00", "value": "12:00" },
+        { "label": "13:00", "value": "13:00" },
+        { "label": "14:00", "value": "14:00" },
+        { "label": "15:00", "value": "15:00" },
+        { "label": "16:00", "value": "16:00" },
+        { "label": "17:00", "value": "17:00" },
+        { "label": "18:00", "value": "18:00" }
+      ],
+      "validate": { "required": true },
+      "layout": { "row": "Row_Time", "columns": 8 }
+    },
+    {
+      "label": "End time",
+      "type": "select",
+      "id": "Field_EndTime",
+      "key": "endTime",
+      "values": [
+        { "label": "08:00", "value": "08:00" },
+        { "label": "09:00", "value": "09:00" },
+        { "label": "10:00", "value": "10:00" },
+        { "label": "11:00", "value": "11:00" },
+        { "label": "12:00", "value": "12:00" },
+        { "label": "13:00", "value": "13:00" },
+        { "label": "14:00", "value": "14:00" },
+        { "label": "15:00", "value": "15:00" },
+        { "label": "16:00", "value": "16:00" },
+        { "label": "17:00", "value": "17:00" },
+        { "label": "18:00", "value": "18:00" }
+      ],
+      "validate": { "required": true },
+      "layout": { "row": "Row_Time", "columns": 8 }
+    },
+    {
+      "label": "Expected attendees",
+      "type": "number",
+      "id": "Field_Attendees",
+      "key": "attendees",
+      "validate": { "required": true, "min": 1 },
+      "layout": { "row": "Row_Attendees", "columns": 8 }
+    },
+    {
+      "label": "Purpose",
+      "type": "textarea",
+      "id": "Field_Purpose",
+      "key": "purpose",
+      "layout": { "row": "Row_Purpose", "columns": null }
+    }
+  ],
+  "type": "default",
+  "id": "booking-request-form",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "8.8.0",
+  "exporter": { "name": "Camunda Modeler", "version": "5.49.0" },
+  "schemaVersion": 19
+}

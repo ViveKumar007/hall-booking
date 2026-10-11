@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/" xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_DecideApprover" name="Decide approver" namespace="http://camunda.org/schema/1.0/dmn" exporter="Camunda Modeler" exporterVersion="5.49.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
+  <decision id="decide-approver" name="Decide approver">
+    <decisionTable id="DecisionTable_DecideApprover" hitPolicy="FIRST">
+      <input id="Input_Venue" label="Venue">
+        <inputExpression id="InputExpression_Venue" typeRef="string">
+          <text>venue</text>
+        </inputExpression>
+      </input>
+      <input id="Input_Duration" label="Duration (hours)">
+        <inputExpression id="InputExpression_Duration" typeRef="number">
+          <text>slot.durationHours</text>
+        </inputExpression>
+      </input>
+      <input id="Input_Attendees" label="Attendees">
+        <inputExpression id="InputExpression_Attendees" typeRef="number">
+          <text>attendees</text>
+        </inputExpression>
+      </input>
+      <output id="Output_Approver" label="Approver" name="approver" typeRef="string" />
+      <rule id="Rule_Lab">
+        <description>Labs are always approved by the lab in-charge</description>
+        <inputEntry id="Entry_Lab_Venue">
+          <text>"lab-1"</text>
+        </inputEntry>
+        <inputEntry id="Entry_Lab_Duration">
+          <text></text>
+        </inputEntry>
+        <inputEntry id="Entry_Lab_Attendees">
+          <text></text>
+        </inputEntry>
+        <outputEntry id="Entry_Lab_Output">
+          <text>"lab-incharge"</text>
+        </outputEntry>
+      </rule>
+      <rule id="Rule_LongHall">
+        <description>Hall bookings longer than 4 hours go to the dean</description>
+        <inputEntry id="Entry_LongHall_Venue">
+          <text>"hall-a","hall-b"</text>
+        </inputEntry>
+        <inputEntry id="Entry_LongHall_Duration">
+          <text>&gt; 4</text>
+        </inputEntry>
+        <inputEntry id="Entry_LongHall_Attendees">
+          <text></text>
+        </inputEntry>
+        <outputEntry id="Entry_LongHall_Output">
+          <text>"dean"</text>
+        </outputEntry>
+      </rule>
+      <rule id="Rule_BigHall">
+        <description>Large audiences (over 100) go to the HOD</description>
+        <inputEntry id="Entry_BigHall_Venue">
+          <text>"hall-a","hall-b"</text>
+        </inputEntry>
+        <inputEntry id="Entry_BigHall_Duration">
+          <text></text>
+        </inputEntry>
+        <inputEntry id="Entry_BigHall_Attendees">
+          <text>&gt; 100</text>
+        </inputEntry>
+        <outputEntry id="Entry_BigHall_Output">
+          <text>"hod"</text>
+        </outputEntry>
+      </rule>
+      <rule id="Rule_Default">
+        <description>Everything else goes to the admin office</description>
+        <inputEntry id="Entry_Default_Venue">
+          <text></text>
+        </inputEntry>
+        <inputEntry id="Entry_Default_Duration">
+          <text></text>
+        </inputEntry>
+        <inputEntry id="Entry_Default_Attendees">
+          <text></text>
+        </inputEntry>
+        <outputEntry id="Entry_Default_Output">
+          <text>"admin-office"</text>
+        </outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_DecideApprover">
+      <dmndi:DMNShape id="DMNShape_DecideApprover" dmnElementRef="decide-approver">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

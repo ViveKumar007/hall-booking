@@ -1,0 +1,8 @@
+{
+  "bookings": [
+    { "id": 1, "hall": "hall-a", "day": "2026-10-20", "startHour": 10, "endHour": 12, "status": "CONFIRMED", "requester": "Dr. Rao" },
+    { "id": 2, "hall": "hall-b", "day": "2026-10-20", "startHour": 14, "endHour": 16, "status": "CONFIRMED", "requester": "Dr. Meena" },
+    { "id": 3, "hall": "lab-1", "day": "2026-10-21", "startHour": 9, "endHour": 13, "status": "CONFIRMED", "requester": "Prof. Iyer" }
+  ],
+  "notifications": []
+}
