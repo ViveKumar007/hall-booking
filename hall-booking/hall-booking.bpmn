@@ -454,14 +454,14 @@
         <bpmndi:BPMNLabel><dc:Bounds x="2327" y="315" width="27" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="User_FixService_di" bpmnElement="User_FixService">
-        <dc:Bounds x="780" y="390" width="100" height="80" />
+        <dc:Bounds x="870" y="390" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_FixAction_di" bpmnElement="Gateway_FixAction" isMarkerVisible="true">
-        <dc:Bounds x="935" y="405" width="50" height="50" />
-        <bpmndi:BPMNLabel><dc:Bounds x="943" y="385" width="34" height="14" /></bpmndi:BPMNLabel>
+        <dc:Bounds x="1025" y="405" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1033" y="385" width="34" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_SetServiceError_di" bpmnElement="Script_SetServiceError">
-        <dc:Bounds x="1040" y="390" width="100" height="80" />
+        <dc:Bounds x="1130" y="390" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Boundary_ServiceDown_di" bpmnElement="Boundary_ServiceDown">
         <dc:Bounds x="812" y="312" width="36" height="36" />
@@ -544,26 +544,26 @@
         <di:waypoint x="2280" y="290" /><di:waypoint x="2322" y="290" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ServiceDown_di" bpmnElement="Flow_ServiceDown">
-        <di:waypoint x="830" y="348" /><di:waypoint x="830" y="390" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="830" y="348" /><di:waypoint x="830" y="430" /><di:waypoint x="870" y="430" />
+        </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToFixAction_di" bpmnElement="Flow_ToFixAction">
-        <di:waypoint x="880" y="430" /><di:waypoint x="935" y="430" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="970" y="430" /><di:waypoint x="1025" y="430" />
+        </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Retry_di" bpmnElement="Flow_Retry">
-        <di:waypoint x="960" y="455" /><di:waypoint x="960" y="500" /><di:waypoint x="700" y="500" /><di:waypoint x="700" y="315" />
-        <bpmndi:BPMNLabel><dc:Bounds x="815" y="482" width="28" height="14" /></bpmndi:BPMNLabel>
+        <di:waypoint x="1050" y="455" /><di:waypoint x="1050" y="510" /><di:waypoint x="700" y="510" /><di:waypoint x="700" y="315" />
+        <bpmndi:BPMNLabel><dc:Bounds x="862" y="492" width="28" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Cancel_di" bpmnElement="Flow_Cancel">
-        <di:waypoint x="985" y="430" /><di:waypoint x="1040" y="430" />
-        <bpmndi:BPMNLabel><dc:Bounds x="993" y="412" width="35" height="14" /></bpmndi:BPMNLabel>
+        <di:waypoint x="1075" y="430" /><di:waypoint x="1130" y="430" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1083" y="412" width="35" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ServiceErrorToMerge_di" bpmnElement="Flow_ServiceErrorToMerge">
-        <di:waypoint x="1090" y="470" /><di:waypoint x="1090" y="610" /><di:waypoint x="2120" y="610" /><di:waypoint x="2120" y="315" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="1230" y="430" /><di:waypoint x="1280" y="430" /><di:waypoint x="1280" y="610" /><di:waypoint x="2120" y="610" /><di:waypoint x="2120" y="315" />
+        </bpmndi:BPMNEdge>
 
       <!-- Pool 2 -->
       <bpmndi:BPMNShape id="Participant_HallAdmin_di" bpmnElement="Participant_HallAdmin" isHorizontal="true">
-        <dc:Bounds x="880" y="700" width="1120" height="350" />
+        <dc:Bounds x="880" y="700" width="1120" height="460" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="MsgStart_ApprovalRequested_di" bpmnElement="MsgStart_ApprovalRequested">
         <dc:Bounds x="942" y="802" width="36" height="36" />
@@ -573,17 +573,17 @@
         <dc:Bounds x="1060" y="780" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Worker_Reminder_di" bpmnElement="Worker_Reminder">
-        <dc:Bounds x="1035" y="920" width="100" height="80" />
+        <dc:Bounds x="1200" y="920" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="End_Reminded_di" bpmnElement="End_Reminded">
-        <dc:Bounds x="1172" y="942" width="36" height="36" />
-        <bpmndi:BPMNLabel><dc:Bounds x="1155" y="985" width="70" height="14" /></bpmndi:BPMNLabel>
+        <dc:Bounds x="1342" y="942" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1325" y="985" width="70" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_RecordDecision_di" bpmnElement="Script_RecordDecision">
         <dc:Bounds x="1240" y="780" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_MarkExpired_di" bpmnElement="Script_MarkExpired">
-        <dc:Bounds x="1240" y="920" width="100" height="80" />
+        <dc:Bounds x="1200" y="1040" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_DecisionMerge_di" bpmnElement="Gateway_DecisionMerge" isMarkerVisible="true">
         <dc:Bounds x="1415" y="795" width="50" height="50" />
@@ -596,12 +596,12 @@
         <bpmndi:BPMNLabel><dc:Bounds x="1817" y="845" width="66" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Timer_Reminder_di" bpmnElement="Timer_Reminder">
-        <dc:Bounds x="1067" y="842" width="36" height="36" />
-        <bpmndi:BPMNLabel><dc:Bounds x="1003" y="880" width="58" height="14" /></bpmndi:BPMNLabel>
+        <dc:Bounds x="1117" y="842" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1160" y="873" width="58" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Timer_Timeout_di" bpmnElement="Timer_Timeout">
-        <dc:Bounds x="1117" y="842" width="36" height="36" />
-        <bpmndi:BPMNLabel><dc:Bounds x="1160" y="872" width="58" height="14" /></bpmndi:BPMNLabel>
+        <dc:Bounds x="1067" y="842" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1003" y="880" width="58" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="Flow_ToReview_di" bpmnElement="Flow_ToReview">
         <di:waypoint x="978" y="820" /><di:waypoint x="1060" y="820" />
@@ -610,20 +610,20 @@
         <di:waypoint x="1160" y="820" /><di:waypoint x="1240" y="820" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Reminder_di" bpmnElement="Flow_Reminder">
-        <di:waypoint x="1085" y="878" /><di:waypoint x="1085" y="920" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="1135" y="878" /><di:waypoint x="1135" y="960" /><di:waypoint x="1200" y="960" />
+        </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ReminderToEnd_di" bpmnElement="Flow_ReminderToEnd">
-        <di:waypoint x="1135" y="960" /><di:waypoint x="1172" y="960" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="1300" y="960" /><di:waypoint x="1342" y="960" />
+        </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Timeout_di" bpmnElement="Flow_Timeout">
-        <di:waypoint x="1135" y="878" /><di:waypoint x="1135" y="900" /><di:waypoint x="1290" y="900" /><di:waypoint x="1290" y="920" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="1085" y="878" /><di:waypoint x="1085" y="1080" /><di:waypoint x="1200" y="1080" />
+        </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_RecordToMerge_di" bpmnElement="Flow_RecordToMerge">
         <di:waypoint x="1340" y="820" /><di:waypoint x="1415" y="820" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ExpiredToMerge_di" bpmnElement="Flow_ExpiredToMerge">
-        <di:waypoint x="1340" y="960" /><di:waypoint x="1440" y="960" /><di:waypoint x="1440" y="845" />
-      </bpmndi:BPMNEdge>
+        <di:waypoint x="1300" y="1080" /><di:waypoint x="1440" y="1080" /><di:waypoint x="1440" y="845" />
+        </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToSendDecision_di" bpmnElement="Flow_ToSendDecision">
         <di:waypoint x="1465" y="820" /><di:waypoint x="1680" y="820" />
       </bpmndi:BPMNEdge>
