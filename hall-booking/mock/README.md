@@ -1,7 +1,8 @@
 # Mock booking API
 
 A [json-server](https://github.com/typicode/json-server/tree/v0.17.4) REST API that stands in for the
-college's booking database. The REST connectors in `hall-booking.bpmn` call it.
+college's booking database. The REST connectors in `hall-booking.bpmn` call it, and the external worker
+records every notification it sends in `/notifications`.
 
 ## Run it
 
@@ -12,6 +13,7 @@ scripts\start-mock.cmd
 This serves `db.json` on **http://127.0.0.1:3000**. Keep the window open. It needs Node.js;
 `npx` downloads json-server 0.17.4 on the first run.
 
+The seed bookings are in January 2027, because the worker rejects booking dates in the past.
 To restore the three seed bookings and clear notifications, run `scripts\reset-mock.cmd`. It works while the
 server is running, because `--watch` reloads the file.
 
@@ -23,7 +25,7 @@ data change as the process runs.
 Each connector URL starts with `{{secrets.MOCK_BASE_URL}}`. On a local Camunda 8 Run, connector secrets
 come from environment variables of the connectors runtime. `scripts\start-camunda.cmd` sets
 `MOCK_BASE_URL=http://127.0.0.1:3000` before it starts c8run. If Camunda is started any other way, the
-connectors fail with an incident on *Fetch existing bookings*.
+booking goes to the *Resolve service issue* task as if the service were down.
 
 The server binds to `127.0.0.1` rather than `localhost`. Node may bind `localhost` to IPv6 only,
 and the Java connector runtime connects over IPv4.
@@ -36,7 +38,7 @@ and the Java connector runtime connects over IPv4.
 | `POST /bookings` | Hold slot | created booking incl. `id` |
 | `PATCH /bookings/{id}` | Confirm slot | updated booking |
 | `DELETE /bookings/{id}` | Release slot (rejected / expired) | `{}` |
-| `POST /notifications` | Notify requester | created notification |
+| `POST /notifications` | Notify requester (external worker, best effort) | created notification |
 
 Booking fields are `hall`, `day`, `startHour`, `endHour`, `status`, `requester`. They deliberately differ
 from the process variable names (`venue`, `bookingDate`, ...), so the FEEL filter in *Detect conflict*

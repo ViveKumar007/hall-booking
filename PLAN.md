@@ -1,34 +1,46 @@
-# Project 28 — Seminar Hall & Lab Booking (Camunda 8.8, BPMN + DMN only)
+# Project 28 — Seminar Hall & Lab Booking (Camunda 8.8, BPMN + DMN + external worker)
 
 > Instructions for Claude Code. Read this whole file before changing anything in `hall-booking/`.
-> **Do not write any Java or Spring Boot code.** All logic lives in BPMN, DMN, forms, FEEL and REST Outbound Connectors.
+> **No Java or Spring Boot.** Process logic lives in BPMN, DMN, forms, FEEL and REST Outbound Connectors.
+> The only code is the external job worker (`hall-booking/worker/worker.js`, plain Node.js, no libraries).
 
-## 0. Status (2026-10-11)
+## 0. Status (2026-10-21)
 
-**Built, deployed and verified on the local Camunda 8 Run 8.8.32.** All six test scenarios pass (section 8).
-See `hall-booking/README.md` for how to start everything and the demo script.
+**Version 2 (review 2) is built, deployed and tested on the local Camunda 8 Run 8.8.32.** See section 8 for results.
+Version 1 (review 1) is saved as git tag `review-1`.
 
-### Changes from the first version of this plan
+### Changes for review 2
 
-| Was | Now | Why |
-|---|---|---|
-| Target Camunda 8.8 **SaaS** | Target **Camunda 8 Run 8.8.32, local** (`E:\camunda8-run-8.8-windows-x86_64\c8run-8.8.32`) | That is what the course install guide uses and what is installed. |
-| Mock API exposed through ngrok/cloudflared | json-server on `http://127.0.0.1:3000`, no tunnel | The local connectors runtime can reach localhost. |
-| Secret `MOCK_BASE_URL` created in Console | Environment variable `MOCK_BASE_URL` set by `scripts/start-camunda.cmd` | Self-managed connectors read secrets from their environment. |
-| Timer `PT30S` | Timer `PT2M` | 30 s is too short to approve live while talking. In the demo, start scenario C first. |
-| Deploy from Web Modeler | `scripts/deploy.cmd` (REST `POST /v2/deployments`, all 4 files at once); Desktop Modeler deploy still works | One click, and forms and DMN are always deployed with the BPMN. |
-| — | `scripts/run-scenarios.ps1` runs A–F through the REST API and prints PASS/FAIL | Regression check, and fills Operate with one instance per path. |
-| — | `Rest_Notify` stores `notificationId` | Shows the notification in Operate's variables. |
-| — | Scenario F uses 150 attendees | Also covers the DMN `hod` rule. |
+The review-2 rubric adds *External Workers & REST Connectors* and *Deployment & Workflow Execution*, so version 2 adds:
+
+| Change | Why |
+|---|---|
+| **Two pools** (collaboration): *Booking Desk* (`hall-booking`) and *Hall Administration* (`hall-approval`), connected by two **message flows** | Shows inter-process communication; the approval office is a separate participant |
+| **External worker** (`worker/worker.js`) handling 4 job types: `validate-booking`, `publish-message`, `send-reminder`, `send-notification` | Rubric: external workers. REST connectors stay for all booking-database calls |
+| **Validate request** (worker) before the conflict check: invalid times, past dates, venue capacity | New outcomes `PAST_DATE`, `OVER_CAPACITY`; `INVALID_TIME` moved here from the gateway |
+| **Error boundary** on *Fetch existing bookings* → *Resolve service issue* user task → Retry or Cancel | Booking service outages become a handled path instead of an incident. New outcome `SERVICE_UNAVAILABLE` |
+| **Non-interrupting reminder timer** (1 min) next to the interrupting expiry timer (2 min) | Shows both timer types |
+| Notify requester is now a worker task (email saved to `worker/outbox/`, logged in `/notifications`) | Notification works even when the booking service is down |
+| Test dates moved to **January 2027** | The worker rejects past dates; October 2026 dates are now in the past |
+| Capacity shown in the venue options; approval form shows `bookingRef` and the reminder/expiry rule | Testers can see the limits |
+| `run-scenarios.ps1` covers 19 automated cases; 3 manual cases documented | More test coverage |
+
+### Changes for review 1 (kept)
+
+Target Camunda 8 Run locally (not SaaS); mock API on `127.0.0.1:3000` without a tunnel; `MOCK_BASE_URL` set as an
+environment variable by `start-camunda.cmd`; expiry timer `PT2M` instead of `PT30S`; one-click `deploy.cmd`.
 
 ## 1. Goal and rules
 
-Build a booking workflow with conflict detection, DMN-based approver selection, admin approval, and automatic release of unconfirmed bookings (timer).
+A booking workflow with validation, conflict detection, DMN-based approver selection, approval by a separate
+administration process, reminders, automatic release of unapproved bookings, and handling of booking-service outages.
 
-- Target: Camunda 8.8 (Camunda 8 Run). Use Zeebe-flavoured BPMN (`zeebe:` extension namespace) and **Camunda user tasks** (`<zeebe:userTask />`).
-- Every element needs a `bpmndi` diagram shape/edge with sensible coordinates (left-to-right, ~150px spacing). Same for the DMN (`dmndi`).
+- Target: Camunda 8.8 (Camunda 8 Run). Zeebe-flavoured BPMN (`zeebe:` namespace), **Camunda user tasks** (`<zeebe:userTask />`).
+- Every element, pool and message flow has diagram interchange (`bpmndi`). Same for the DMN (`dmndi`).
 - IDs below are fixed. Do not rename them.
-- Course requirements this must satisfy: user task with a Camunda Form, exclusive gateway, script task (FEEL) and REST connector, timer boundary event, notification step.
+- Course requirements covered: user tasks with Camunda Forms, exclusive gateways, FEEL script tasks, REST connectors,
+  external worker, business rule task (DMN), timer boundary events (interrupting and non-interrupting), error boundary
+  event, message send/receive between pools, notification step.
 
 ### Local environment (this machine)
 
@@ -37,203 +49,232 @@ Build a booking workflow with conflict detection, DMN-based approver selection, 
 | Camunda 8 Run | `E:\camunda8-run-8.8-windows-x86_64\c8run-8.8.32` |
 | JDK for c8run | `E:\jdk-21.0.6`. Do **not** use `D:\`: c8run searches `JAVA_HOME` for a file called `java`, and on the D: drive root it finds a source folder first. |
 | Operate / Tasklist | http://localhost:8080/operate, http://localhost:8080/tasklist (`demo` / `demo`) |
+| Camunda REST API (scripts, worker) | http://localhost:8080/v2 (unprotected in c8run) |
 | Zeebe gRPC (Desktop Modeler deploy) | `http://localhost:26500`, authentication None |
 | Mock API | http://127.0.0.1:3000 (Node 24, `npx json-server@0.17.4`) |
-| Desktop Modeler | `E:\camunda-modeler-5.49.0-win-x64` (form schemaVersion 19) |
+| Worker | Node 24, `node worker/worker.js` |
+| Desktop Modeler | `E:\camunda-modeler-5.49.0-win-x64` (form schemaVersion 19). Launch by double-click: from VS Code's terminal it inherits `ELECTRON_RUN_AS_NODE=1` and quits. |
 
 ### Files (folder `hall-booking/`)
 
 ```
 hall-booking/
-├─ hall-booking.bpmn          process id: hall-booking
+├─ hall-booking.bpmn          collaboration: processes hall-booking (Booking Desk) + hall-approval (Hall Administration)
 ├─ decide-approver.dmn        decision id: decide-approver
 ├─ booking-request-form.form  form id: booking-request-form
 ├─ approval-form.form         form id: approval-form
-├─ mock/db.json               live data (json-server writes to it; git-ignored, created from the seed)
-├─ mock/db.seed.json          clean seed copy
+├─ service-fix-form.form      form id: service-fix-form
+├─ worker/worker.js           external job worker (4 job types)
+├─ worker/outbox/             emails and reminders written by the worker (git-ignored)
+├─ mock/db.seed.json          seed data (3 bookings, January 2027)
+├─ mock/db.json               live data (git-ignored, created from the seed)
 ├─ mock/README.md             how the mock API works
 ├─ scripts/start-mock.cmd     json-server on 127.0.0.1:3000
-├─ scripts/reset-mock.cmd     copy seed over db.json
 ├─ scripts/start-camunda.cmd  c8run start with JAVA_HOME + MOCK_BASE_URL
+├─ scripts/start-worker.cmd   the external worker
 ├─ scripts/stop-camunda.cmd   c8run stop
-├─ scripts/deploy.cmd         deploy all 4 files via REST
-├─ scripts/run-scenarios.ps1  automated scenarios A–F
-└─ README.md                  setup, demo script, scenarios, screenshot checklist
+├─ scripts/deploy.cmd         deploy DMN + 3 forms + BPMN via REST
+├─ scripts/reset-mock.cmd     copy seed over db.json
+├─ scripts/run-scenarios.ps1  automated test cases
+└─ README.md                  setup, demo steps, test cases, screenshot checklist
 ```
 
 ## 2. Mock API
 
-`scripts\start-mock.cmd` runs `npx json-server@0.17.4 --watch mock/db.json --host 127.0.0.1 --port 3000`.
-Bind to `127.0.0.1`, not `localhost`: Node may bind `localhost` to IPv6 only, and the Java connector runtime connects over IPv4.
+`npx json-server@0.17.4 --watch mock/db.json --host 127.0.0.1 --port 3000`. Bind to `127.0.0.1` (Node may bind
+`localhost` to IPv6 only; the Java connector runtime uses IPv4). Connector URLs use `{{secrets.MOCK_BASE_URL}}`.
 
-Connector URLs use `{{secrets.MOCK_BASE_URL}}`. `scripts\start-camunda.cmd` sets `MOCK_BASE_URL=http://127.0.0.1:3000` before `c8run.exe start`; the connectors runtime inherits it.
-For SaaS you would need a tunnel plus a Console secret instead (see `mock/README.md`).
-
-Contract (json-server conventions):
-
-| Call | Purpose | Response |
+| Call | Used by | Response |
 |---|---|---|
-| `GET /bookings` | all bookings (FEEL filters them) | array of booking objects |
-| `POST /bookings` | hold a slot | created object incl. `id` |
-| `PATCH /bookings/{id}` | confirm | updated object |
-| `DELETE /bookings/{id}` | release | `{}` |
-| `POST /notifications` | notification | created object |
+| `GET /bookings` | Fetch existing bookings | array of bookings |
+| `POST /bookings` | Hold slot | created booking incl. `id` |
+| `PATCH /bookings/{id}` | Confirm slot | updated booking |
+| `DELETE /bookings/{id}` | Release slot (rejected / expired) | `{}` |
+| `POST /notifications` | Worker, Notify requester (best effort) | created notification |
 
-Seed (`mock/db.seed.json`). The field names are deliberately different from the process variable names, so FEEL filters don't shadow them:
+Seed (`mock/db.seed.json`). Booking field names differ from process variable names on purpose (FEEL filter scoping):
 
 ```json
-{
-  "bookings": [
-    {"id": 1, "hall": "hall-a", "day": "2026-10-20", "startHour": 10, "endHour": 12, "status": "CONFIRMED", "requester": "Dr. Rao"},
-    {"id": 2, "hall": "hall-b", "day": "2026-10-20", "startHour": 14, "endHour": 16, "status": "CONFIRMED", "requester": "Dr. Meena"},
-    {"id": 3, "hall": "lab-1",  "day": "2026-10-21", "startHour": 9,  "endHour": 13, "status": "CONFIRMED", "requester": "Prof. Iyer"}
-  ],
-  "notifications": []
-}
+{ "bookings": [
+    {"id": 1, "hall": "hall-a", "day": "2027-01-11", "startHour": 10, "endHour": 12, "status": "CONFIRMED", "requester": "Dr. Rao"},
+    {"id": 2, "hall": "hall-b", "day": "2027-01-11", "startHour": 14, "endHour": 16, "status": "CONFIRMED", "requester": "Dr. Meena"},
+    {"id": 3, "hall": "lab-1",  "day": "2027-01-12", "startHour": 9,  "endHour": 13, "status": "CONFIRMED", "requester": "Prof. Iyer"} ],
+  "notifications": [] }
 ```
 
 ## 3. Process variables
 
-From the start form: `requesterName`, `email`, `venue` (`hall-a` | `hall-b` | `lab-1`), `bookingDate` (`yyyy-MM-dd`), `startTime`, `endTime` (hourly `HH:00`), `attendees` (number), `purpose`.
+From the start form: `requesterName`, `email`, `venue` (`hall-a` | `hall-b` | `lab-1`), `bookingDate` (`yyyy-MM-dd`),
+`startTime`, `endTime` (`HH:00`), `attendees`, `purpose`.
 
-Produced: `slot` (context), `existing` (list), `conflictCheck` (context), `approver` (string), `bookingId`, `approved`, `remarks`, `outcome` (`APPROVED` | `REJECTED` | `EXPIRED` | `CONFLICT` | `INVALID_TIME`), `notificationId`.
+Booking Desk produces: `slot`, `validation` (`{valid, reason, capacity, checkedOn}`), `existing`, `conflictCheck`,
+`serviceError`, `serviceFixAction` (`RETRY` | `CANCEL`), `approver`, `bookingId`, `bookingRef` (`"BK-" + bookingId`),
+`decision` (`{outcome, remarks}`, received by message), `outcome`, `notificationId`, `notifiedAt`.
 
-## 4. BPMN: `hall-booking` ("Seminar Hall and Lab Booking")
+Outcomes: `APPROVED`, `REJECTED`, `EXPIRED`, `CONFLICT`, `INVALID_TIME`, `PAST_DATE`, `OVER_CAPACITY`, `SERVICE_UNAVAILABLE`.
 
-| # | ID | Type | Name | Configuration |
-|---|---|---|---|---|
-| 1 | `StartEvent_Requested` | Start event | Booking requested | start form = `booking-request-form` |
-| 2 | `Script_PrepareSlot` | Script task (FEEL) | Prepare slot | result variable `slot`, expression below |
-| 3 | `Rest_FetchBookings` | REST Outbound Connector | Fetch existing bookings | GET `{{secrets.MOCK_BASE_URL}}/bookings`, auth none, result expression `={existing: response.body}` |
-| 4 | `Script_DetectConflict` | Script task (FEEL) | Detect conflict | result variable `conflictCheck`, expression below |
-| 5 | `Gateway_SlotOk` | Exclusive gateway | Slot available? | flows below |
-| 6 | `Script_SetReason` | Script task (FEEL) | Set rejection reason | result variable `outcome`, expression below |
-| 7 | `Dmn_DecideApprover` | Business rule task | Decide approver | called decision `decide-approver`, result variable `approver` |
-| 8 | `Rest_HoldSlot` | REST Outbound Connector | Hold slot | POST `bookings`, body below, result expression `={bookingId: response.body.id}` |
-| 9 | `User_Approval` | Camunda user task | Admin approval | form `approval-form`, no assignee or candidate groups |
-| 10 | `Timer_Timeout` | Boundary timer, **interrupting** | Not approved in time | attached to #9, `timeDuration` = `PT2M` (demo; real value `PT24H`) |
-| 11 | `Gateway_Approved` | Exclusive gateway | Approved? | flows below |
-| 12 | `Rest_ConfirmSlot` | REST Outbound Connector | Confirm slot | PATCH `bookings/{id}`, body `={status: "CONFIRMED"}`, result expression `={outcome: "APPROVED"}` |
-| 13 | `Rest_ReleaseRejected` | REST Outbound Connector | Release slot (rejected) | DELETE `bookings/{id}`, result expression `={outcome: "REJECTED"}` |
-| 14 | `Rest_ReleaseExpired` | REST Outbound Connector | Release slot (expired) | DELETE `bookings/{id}`, result expression `={outcome: "EXPIRED"}` |
-| 15 | `Gateway_Merge` | Exclusive gateway (merge) | | merges #6, #12, #13, #14 |
-| 16 | `Rest_Notify` | REST Outbound Connector | Notify requester | POST `notifications`, body below, result expression `={notificationId: response.body.id}` |
-| 17 | `EndEvent_Done` | End event | Done | |
+Hall Administration receives (message variables): requester fields, `approver`, `bookingId`, `bookingRef`;
+produces `approved`, `remarks`, `decision`, `reminderSentAt`.
 
-### Sequence flows
+## 4. BPMN collaboration (`hall-booking.bpmn`)
 
-- 1 → 2 → 3 → 4 → 5
-- 5 → 6 (`Flow_SlotTaken`), condition `=slot.durationHours <= 0 or conflictCheck.hasConflict`
-- 5 → 7 (`Flow_SlotFree`), **default flow**
-- 6 → 15
-- 7 → 8 → 9 → 11
-- 10 → 14 (timer path)
-- 11 → 12 (`Flow_Yes`), condition `=approved = true`
-- 11 → 13 (`Flow_No`), **default flow**
-- 12 → 15, 13 → 15, 14 → 15
-- 15 → 16 → 17
+| Element | Value |
+|---|---|
+| Collaboration | `Collaboration_HallBooking` |
+| Pool 1 | `Participant_BookingDesk` "Booking Desk" → process `hall-booking` "Seminar Hall and Lab Booking" |
+| Pool 2 | `Participant_HallAdmin` "Hall Administration" → process `hall-approval` "Hall Approval" |
+| Message flow | `MsgFlow_ApprovalRequest`: `Send_ApprovalRequest` → `MsgStart_ApprovalRequested` |
+| Message flow | `MsgFlow_ApprovalDecision`: `Send_Decision` → `Receive_Decision` |
+| Message | `Message_ApprovalRequest` name `booking-approval-request` (start event, no correlation key needed) |
+| Message | `Message_ApprovalDecision` name `booking-approval-decision`, correlation key `=bookingRef` |
+| Error | `Error_ServiceDown` code `BOOKING_SERVICE_DOWN` |
 
-### Expressions
+Zeebe does not execute message flows. The send tasks are job tasks of type `publish-message`; the worker publishes
+the message (`POST /v2/messages/publication`, TTL 1 h) and Zeebe delivers it to the waiting start event or receive task.
 
-`Script_PrepareSlot` (result variable `slot`):
-```
-={
-  startHour: number(substring(startTime, 1, 2)),
-  endHour: number(substring(endTime, 1, 2)),
-  durationHours: number(substring(endTime, 1, 2)) - number(substring(startTime, 1, 2))
-}
-```
+### 4.1 Pool 1: Booking Desk (`hall-booking`)
 
-`Script_DetectConflict` (result variable `conflictCheck`):
-```
-={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour < slot.endHour and item.endHour > slot.startHour]) > 0 }
-```
+| ID | Type | Name | Configuration |
+|---|---|---|---|
+| `StartEvent_Requested` | Start event | Booking requested | form `booking-request-form` |
+| `Script_PrepareSlot` | Script (FEEL) | Prepare slot | result `slot` |
+| `Worker_ValidateRequest` | Service task (worker) | Validate request | type `validate-booking` |
+| `Gateway_Valid` | XOR | Request valid? | `Flow_Invalid` `=validation.valid = false` → `Gateway_Merge`; default `Flow_Valid` |
+| `Gateway_FetchRetry` | XOR merge | | joins `Flow_Valid` and `Flow_Retry` |
+| `Rest_FetchBookings` | REST connector | Fetch existing bookings | GET `/bookings`, result `={existing: response.body}`, errorExpression below |
+| `Boundary_ServiceDown` | Error boundary | Service down | on `Rest_FetchBookings`, error `Error_ServiceDown` |
+| `User_FixService` | Camunda user task | Resolve service issue | form `service-fix-form` |
+| `Gateway_FixAction` | XOR | Retry? | `Flow_Retry` `=serviceFixAction = "RETRY"` → `Gateway_FetchRetry`; default `Flow_Cancel` |
+| `Script_SetServiceError` | Script (FEEL) | Set service error | `="SERVICE_UNAVAILABLE"` → `outcome` |
+| `Script_DetectConflict` | Script (FEEL) | Detect conflict | result `conflictCheck` |
+| `Gateway_SlotOk` | XOR | Slot available? | `Flow_SlotTaken` `=conflictCheck.hasConflict = true`; default `Flow_SlotFree` |
+| `Script_SetReason` | Script (FEEL) | Set rejection reason | `="CONFLICT"` → `outcome` |
+| `Dmn_DecideApprover` | Business rule | Decide approver | decision `decide-approver`, result `approver` |
+| `Rest_HoldSlot` | REST connector | Hold slot | POST `/bookings` (status PENDING), result `={bookingId: response.body.id, bookingRef: "BK-" + string(response.body.id)}` |
+| `Send_ApprovalRequest` | Send task (worker) | Send approval request | type `publish-message`, header `messageName=booking-approval-request`, inputs `correlationKey=bookingRef`, `messageVariables` (requester fields, approver, bookingId, bookingRef) |
+| `Receive_Decision` | Receive task | Wait for decision | message `Message_ApprovalDecision` |
+| `Gateway_Decision` | XOR | Decision? | `Flow_Approved` `=decision.outcome = "APPROVED"`, `Flow_Expired` `=decision.outcome = "EXPIRED"`, default `Flow_Rejected` |
+| `Rest_ConfirmSlot` | REST connector | Confirm slot | PATCH `/bookings/{id}`, result `={outcome: "APPROVED"}` |
+| `Rest_ReleaseRejected` | REST connector | Release slot (rejected) | DELETE, result `={outcome: "REJECTED"}` |
+| `Rest_ReleaseExpired` | REST connector | Release slot (expired) | DELETE, result `={outcome: "EXPIRED"}` |
+| `Gateway_Merge` | XOR merge | | 6 incoming: invalid, conflict, service error, confirm, reject, expire |
+| `Worker_Notify` | Service task (worker) | Notify requester | type `send-notification`, inputs `to`, `subject`, `message` (FEEL below) |
+| `EndEvent_Done` | End event | Done | |
 
-`Script_SetReason` (result variable `outcome`):
-```
-=if slot.durationHours <= 0 then "INVALID_TIME" else "CONFLICT"
-```
+### 4.2 Pool 2: Hall Administration (`hall-approval`)
 
-`Rest_HoldSlot` body:
-```
-={hall: venue, day: bookingDate, startHour: slot.startHour, endHour: slot.endHour, status: "PENDING", requester: requesterName}
-```
+| ID | Type | Name | Configuration |
+|---|---|---|---|
+| `MsgStart_ApprovalRequested` | Message start | Approval request received | `Message_ApprovalRequest` |
+| `User_Approval` | Camunda user task | Review booking | form `approval-form` |
+| `Timer_Reminder` | Boundary timer, **non-interrupting** | After 1 min | `PT1M` → `Worker_Reminder` → `End_Reminded` |
+| `Timer_Timeout` | Boundary timer, **interrupting** | After 2 min | `PT2M` → `Script_MarkExpired` |
+| `Worker_Reminder` | Service task (worker) | Remind approver | type `send-reminder`, input `approverRole=approver` |
+| `Script_RecordDecision` | Script (FEEL) | Record decision | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks}` → `decision` |
+| `Script_MarkExpired` | Script (FEEL) | Mark as expired | `={outcome: "EXPIRED", remarks: "Not reviewed within 2 minutes"}` → `decision` |
+| `Gateway_DecisionMerge` | XOR merge | | |
+| `Send_Decision` | Send task (worker) | Send decision | type `publish-message`, header `messageName=booking-approval-decision`, inputs `correlationKey=bookingRef`, `messageVariables={decision: decision}` |
+| `End_Decided` | End event | Decision sent | |
 
-URL for confirm/release tasks: `="{{secrets.MOCK_BASE_URL}}/bookings/" + string(bookingId)`
+### 4.3 Expressions
 
-`Rest_Notify` body:
-```
-={
-  to: email,
-  subject: "Hall booking " + outcome,
-  message: if outcome = "APPROVED" then "Your booking of " + venue + " on " + bookingDate + " (" + startTime + "-" + endTime + ") is confirmed."
-    else if outcome = "REJECTED" then "Your booking request was rejected by the approver."
-    else if outcome = "EXPIRED" then "Your request was auto-cancelled because it was not approved in time."
-    else if outcome = "CONFLICT" then "That slot is already booked. Please choose another time."
-    else "The end time must be after the start time."
-}
-```
+`Script_PrepareSlot`: `={startHour: number(substring(startTime, 1, 2)), endHour: number(substring(endTime, 1, 2)), durationHours: endHour - startHour}` (written out in full in the BPMN).
 
-### Connector notes (as built)
+`Script_DetectConflict`:
+`={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour < slot.endHour and item.endHour > slot.startHour]) > 0 }`
 
-- Element template `io.camunda.connectors.HttpJson.v2`, **version 12**: the newest whose `engines` range includes 8.8 (v13 needs `^8.9`). It was checked against the template the Desktop Modeler downloaded (`%APPDATA%\camunda-modeler\resources\element-templates\.camunda-connector-templates.json`).
-- Task type `io.camunda:http-json:1`, retries 3. Inputs: `authentication.type=noAuth`, `method`, `url`, `storeResponse=false`, `connectionTimeoutInSeconds=20`, `readTimeoutInSeconds=20`, plus `body` and `ignoreNullValues=false` for POST/PATCH.
-- Task headers: `elementTemplateVersion=12`, `elementTemplateId`, `resultExpression`, `retryBackoff=PT0S`.
+`Rest_FetchBookings` errorExpression (turns any connector failure into the BPMN error):
+`=if error != null then bpmnError("BOOKING_SERVICE_DOWN", "Booking service unreachable", {serviceError: error.message}) else null`
+
+`Worker_Notify` message: one `if … else if …` per outcome, including `decision.remarks` for REJECTED and
+`validation.capacity` for OVER_CAPACITY.
+
+### 4.4 External worker job types (`worker/worker.js`)
+
+| Type | Used by | Does | Returns |
+|---|---|---|---|
+| `validate-booking` | `Worker_ValidateRequest` | `durationHours > 0`, `bookingDate >= today`, `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60) | `validation`, plus `outcome` when invalid |
+| `publish-message` | `Send_ApprovalRequest`, `Send_Decision` | `POST /v2/messages/publication` with header `messageName`, input `correlationKey`, input `messageVariables` | nothing |
+| `send-reminder` | `Worker_Reminder` | writes `outbox/*_REMINDER_*.txt`, logs | `reminderSentAt` |
+| `send-notification` | `Worker_Notify` | writes `outbox/*_<OUTCOME>_*.txt`, `POST /notifications` (best effort) | `notificationId`, `notifiedAt` |
+
+Activation: `POST /v2/jobs/activation` (long poll 10 s, job timeout 10 s), completion `POST /v2/jobs/{key}/completion`,
+failure `POST /v2/jobs/{key}/failure` with retries − 1 and 5 s backoff.
+
+### 4.5 Connector notes
+
+REST Outbound Connector template `io.camunda.connectors.HttpJson.v2` version **12** (newest for 8.8; v13 needs 8.9),
+task type `io.camunda:http-json:1`, retries 3, `retryBackoff=PT0S`, auth `noAuth`.
 
 ## 5. DMN: `decide-approver`
 
-Hit policy **FIRST**. One output column, so `approver` is a plain string. Inputs are FEEL expressions on process variables.
+Hit policy **FIRST**, one output column.
 
-| Input 1: `venue` (string) | Input 2: `slot.durationHours` (number) | Input 3: `attendees` (number) | Output: `approver` |
+| `venue` | `slot.durationHours` | `attendees` | `approver` |
 |---|---|---|---|
 | `"lab-1"` | - | - | `"lab-incharge"` |
 | `"hall-a","hall-b"` | `> 4` | - | `"dean"` |
 | `"hall-a","hall-b"` | - | `> 100` | `"hod"` |
 | - | - | - | `"admin-office"` |
 
-The approval form shows `approver` as text, so the demo needs no real users or groups.
+## 6. Forms (schemaVersion 19)
 
-## 6. Forms (Camunda Forms JSON, schemaVersion 19, target 8.8)
+- **`booking-request-form`**: name, email (validated), venue select with capacity in the label, date, start/end selects 08:00–18:00, attendees (min 1), purpose.
+- **`approval-form`**: summary text with `{{bookingRef}}`, `{{approver}}` and the request; checkbox `approved` (default false); textarea `remarks` (default "").
+- **`service-fix-form`**: text with `{{serviceError}}` and the request; radio `serviceFixAction` (`RETRY` default, `CANCEL`).
 
-**`booking-request-form`**: `requesterName` (text, required), `email` (text, required, email validation), `venue` (select: hall-a "Seminar Hall A", hall-b "Seminar Hall B", lab-1 "Computer Lab 1"), `bookingDate` (date-time, subtype date, required), `startTime` and `endTime` (selects, hourly values `"08:00"` to `"18:00"`), `attendees` (number, required, min 1), `purpose` (text area).
+## 7. Manual steps
 
-**`approval-form`**: a text view (bullet list, since Markdown tables may not render) showing requesterName, email, venue, bookingDate, startTime to endTime, attendees, purpose, bookingId and "Approver role: {{approver}}"; then `approved` (checkbox, default false, label "Approve this booking") and `remarks` (text area).
+1. `start-mock.cmd`, `start-camunda.cmd`, `start-worker.cmd` (three windows, keep open).
+2. `deploy.cmd` (or Modeler: DMN and forms first, then the BPMN).
+3. `reset-mock.cmd` before a demo or test run.
+4. Tasklist → Processes → "Seminar Hall and Lab Booking". Approval tasks appear as *Review booking* (process *Hall Approval*).
 
-## 7. Manual steps (the human does these)
+## 8. Test cases
 
-1. `scripts\start-mock.cmd` (keep window open).
-2. `scripts\start-camunda.cmd` (keep window open; ready when Operate's login page loads).
-3. `scripts\deploy.cmd`, or deploy DMN + forms + BPMN from Desktop Modeler (Camunda 8 Self-Managed, `http://localhost:26500`, auth None).
-4. Tasklist → Processes → start "Seminar Hall and Lab Booking", fill the form.
+Automated by `scripts/run-scenarios.ps1` (reset the mock first). Seed: hall-a 11 Jan 10–12, hall-b 11 Jan 14–16, lab-1 12 Jan 9–13 (2027).
 
-## 8. Test scenarios
+| # | Group | Input | Expected | Result 2026-10-21 |
+|---|---|---|---|---|
+| A | Main path | hall-a, 12 Jan, 14–16, 50; approve | `admin-office`, `APPROVED` | PASS |
+| B | Main path | hall-a, 11 Jan, 11–13 | `CONFLICT` | PASS |
+| C | Main path | lab-1, 13 Jan, 10–12; nobody acts | reminder at 1 min, `EXPIRED` at 2 min, `lab-incharge` | PASS |
+| D | Main path | hall-b, 14 Jan, 15–13 | `INVALID_TIME` | PASS |
+| E | Main path | hall-b, 15 Jan, 09–15, 80; approve | `dean`, `APPROVED` | PASS |
+| F | Main path | hall-b, 18 Jan, 10–12, 150; reject | `hod`, `REJECTED` | PASS |
+| G | Worker validation | hall-a, 1 Oct 2026 | `PAST_DATE` | PASS |
+| H | Worker validation | lab-1, 61 people | `OVER_CAPACITY` | PASS |
+| I | Worker validation | lab-1, exactly 60; approve | `lab-incharge`, `APPROVED` | PASS |
+| J | Worker validation | hall-a, 10:00–10:00 | `INVALID_TIME` | PASS |
+| K | Conflict check | hall-a, 11 Jan, 12–14 (back-to-back); approve | `APPROVED` | PASS |
+| L | Conflict check | hall-b, 11 Jan, 10–12 (other venue); approve | `APPROVED` | PASS |
+| M | Conflict check | hall-a, 11 Jan, 09–13 (covers seed) | `CONFLICT` | PASS |
+| N | DMN | hall-a, 4 h, 100 people; approve | `admin-office` | PASS |
+| O | DMN | hall-a, 2 h, 101 people; approve | `hod` | PASS |
+| P | DMN | hall-b, 8 h, 150 people; approve | `dean` (FIRST) | PASS |
+| Q1/Q2 | Slot hold | Q1 pending, Q2 same slot | Q2 `CONFLICT`, Q1 then `APPROVED` | PASS |
+| R | Slot hold | rebook C's slot after it expired; approve | `APPROVED` | PASS |
 
-| # | Input | Expected | Result on 2026-10-11 |
+Manual (need a window closed and reopened):
+
+| # | Steps | Expected | Result 2026-10-21 |
 |---|---|---|---|
-| A | hall-a, 2026-10-21, 14:00-16:00, 50 attendees; tick approve | approver `admin-office`, outcome `APPROVED` | PASS: `admin-office`, `APPROVED`, booking 4 CONFIRMED |
-| B | hall-a, 2026-10-20, 11:00-13:00 (overlaps seed booking 10-12) | ends via Set rejection reason, `CONFLICT` | PASS: `CONFLICT`, no task |
-| C | lab-1, 2026-10-22, 10:00-12:00; do nothing for 2 min | timer fires, release, `EXPIRED` | PASS: `lab-incharge`, timer fired after 2 min, booking deleted, `EXPIRED` |
-| D | end time before start time | `INVALID_TIME` | PASS: `INVALID_TIME`, no task |
-| E | hall-b, 2026-10-23, 09:00-15:00 | DMN gives `dean` | PASS: `dean`, `APPROVED` |
-| F | hall-b, 2026-10-25, 10:00-12:00, 150 attendees; leave approval unticked, complete task | DMN gives `hod`, `REJECTED` | PASS: `hod`, `REJECTED`, booking deleted |
-
-Mock data check: A leaves a CONFIRMED booking, C leaves none, and every run adds a notification.
-`scripts\run-scenarios.ps1` runs all six and prints PASS/FAIL. Run `scripts\reset-mock.cmd` first.
+| S1 | Close mock API, start a booking, restart mock, choose **Retry**, reject | *Resolve service issue* task with `serviceError`; after retry continues; `REJECTED` with remarks in the email | PASS |
+| S2 | Close mock API, start a booking, choose **Cancel** | `SERVICE_UNAVAILABLE`, email saved in outbox although the mock is down | PASS |
+| W | Close the worker, start a booking, restart the worker | Booking waits at *Validate request* (no incident), continues after restart | PASS |
 
 ## 9. Acceptance checklist
 
-- [x] All IDs match this file exactly
-- [x] BPMN and DMN contain full diagram interchange (shapes and edges)
-- [x] Both gateways have the default flows set as specified
-- [x] Timer boundary is interrupting and attached to `User_Approval`
+- [x] Collaboration with two executable pools and two message flows, full DI
+- [x] All gateways have default flows; conditions as in section 4
+- [x] Interrupting and non-interrupting timers on `User_Approval`; error boundary on `Rest_FetchBookings`
+- [x] External worker handles all four job types; REST connectors handle all booking-database calls
 - [x] No Java, no `pom.xml`
-- [x] `README.md` lists the screenshots needed: Operate path for A, B, C, the DMN table, Tasklist forms, and `db.json` after C
-- [x] Deployed to local Camunda 8 Run and scenarios A–F executed
+- [x] Deployed to local Camunda 8 Run (hall-booking v2, hall-approval v1)
+- [x] All automated test cases pass (section 8): 19 of 19 on 2026-10-21, plus the 3 manual cases
 
-## 10. Next steps (after the progress demo)
+## 10. Next steps
 
-- Click through scenarios A–C by hand in Tasklist to confirm both forms render as intended (the automated run uses the API, not the forms).
-- Error boundary on `Rest_HoldSlot` leading to an "Admin Fix" user task (the reference flow's pattern)
-- A second DMN that maps `outcome` to the notification text
-- Swap the notify REST call for the SendGrid or Email connector
-- Real approver assignment: use `approver` as the candidate group of `User_Approval` and create the groups in Identity
+- Assign `User_Approval` to real candidate groups from `approver` (Identity groups).
+- Email connector (SendGrid/SMTP) instead of the outbox.
+- Second DMN for venue capacities (instead of the constant in the worker).

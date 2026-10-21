@@ -1,10 +1,13 @@
 {
   "components": [
     {
-      "text": "# Booking approval\n**Approver role:** {{approver}}\n\n- **Requester:** {{requesterName}} ({{email}})\n- **Venue:** {{venue}}\n- **Date:** {{bookingDate}}\n- **Time:** {{startTime}} to {{endTime}}\n- **Attendees:** {{attendees}}\n- **Purpose:** {{purpose}}\n\nThe slot is on hold as booking {{bookingId}}. It is released automatically if this task is not completed within 2 minutes.",
+      "text": "# Booking approval\n**Booking:** {{bookingRef}}  \n**Approver role:** {{approver}}\n\n- **Requester:** {{requesterName}} ({{email}})\n- **Venue:** {{venue}}\n- **Date:** {{bookingDate}}\n- **Time:** {{startTime}} to {{endTime}}\n- **Attendees:** {{attendees}}\n- **Purpose:** {{purpose}}\n\nThe slot is on hold. A reminder is sent after 1 minute; after 2 minutes the request expires and the slot is released.",
       "type": "text",
       "id": "Text_Summary",
-      "layout": { "row": "Row_Summary", "columns": null }
+      "layout": {
+        "row": "Row_Summary",
+        "columns": null
+      }
     },
     {
       "label": "Approve this booking",
@@ -12,20 +15,30 @@
       "id": "Field_Approved",
       "key": "approved",
       "defaultValue": false,
-      "layout": { "row": "Row_Decision", "columns": null }
+      "layout": {
+        "row": "Row_Decision",
+        "columns": null
+      }
     },
     {
       "label": "Remarks",
       "type": "textarea",
       "id": "Field_Remarks",
       "key": "remarks",
-      "layout": { "row": "Row_Remarks", "columns": null }
+      "layout": {
+        "row": "Row_Remarks",
+        "columns": null
+      },
+      "defaultValue": ""
     }
   ],
   "type": "default",
   "id": "approval-form",
   "executionPlatform": "Camunda Cloud",
   "executionPlatformVersion": "8.8.0",
-  "exporter": { "name": "Camunda Modeler", "version": "5.49.0" },
+  "exporter": {
+    "name": "Camunda Modeler",
+    "version": "5.49.0"
+  },
   "schemaVersion": 19
 }

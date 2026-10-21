@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_HallBooking" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.49.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
+  <bpmn:collaboration id="Collaboration_HallBooking">
+    <bpmn:participant id="Participant_BookingDesk" name="Booking Desk" processRef="hall-booking" />
+    <bpmn:participant id="Participant_HallAdmin" name="Hall Administration" processRef="hall-approval" />
+    <bpmn:messageFlow id="MsgFlow_ApprovalRequest" name="approval request" sourceRef="Send_ApprovalRequest" targetRef="MsgStart_ApprovalRequested" />
+    <bpmn:messageFlow id="MsgFlow_ApprovalDecision" name="decision" sourceRef="Send_Decision" targetRef="Receive_Decision" />
+  </bpmn:collaboration>
+  <bpmn:message id="Message_ApprovalRequest" name="booking-approval-request" />
+  <bpmn:message id="Message_ApprovalDecision" name="booking-approval-decision">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=bookingRef" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:error id="Error_ServiceDown" name="Booking service down" errorCode="BOOKING_SERVICE_DOWN" />
+
+  <!-- ===================== Pool 1: Booking Desk ===================== -->
   <bpmn:process id="hall-booking" name="Seminar Hall and Lab Booking" isExecutable="true">
     <bpmn:startEvent id="StartEvent_Requested" name="Booking requested">
       <bpmn:extensionElements>
@@ -12,8 +27,25 @@
         <zeebe:script expression="={&#10;  startHour: number(substring(startTime, 1, 2)),&#10;  endHour: number(substring(endTime, 1, 2)),&#10;  durationHours: number(substring(endTime, 1, 2)) - number(substring(startTime, 1, 2))&#10;}" resultVariable="slot" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToPrepare</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToFetch</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToValidate</bpmn:outgoing>
     </bpmn:scriptTask>
+    <bpmn:serviceTask id="Worker_ValidateRequest" name="Validate request">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="validate-booking" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToValidate</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToValid</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_Valid" name="Request valid?" default="Flow_Valid">
+      <bpmn:incoming>Flow_ToValid</bpmn:incoming>
+      <bpmn:outgoing>Flow_Invalid</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Valid</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_FetchRetry">
+      <bpmn:incoming>Flow_Valid</bpmn:incoming>
+      <bpmn:incoming>Flow_Retry</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToFetch</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
     <bpmn:serviceTask id="Rest_FetchBookings" name="Fetch existing bookings" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
@@ -29,15 +61,40 @@
           <zeebe:header key="elementTemplateVersion" value="12" />
           <zeebe:header key="elementTemplateId" value="io.camunda.connectors.HttpJson.v2" />
           <zeebe:header key="resultExpression" value="={existing: response.body}" />
+          <zeebe:header key="errorExpression" value="=if error != null then bpmnError(&#34;BOOKING_SERVICE_DOWN&#34;, &#34;Booking service unreachable&#34;, {serviceError: error.message}) else null" />
           <zeebe:header key="retryBackoff" value="PT0S" />
         </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToFetch</bpmn:incoming>
       <bpmn:outgoing>Flow_ToDetect</bpmn:outgoing>
     </bpmn:serviceTask>
+    <bpmn:boundaryEvent id="Boundary_ServiceDown" name="Service down" attachedToRef="Rest_FetchBookings">
+      <bpmn:outgoing>Flow_ServiceDown</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_ServiceDown" errorRef="Error_ServiceDown" />
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="User_FixService" name="Resolve service issue">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:formDefinition formId="service-fix-form" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ServiceDown</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToFixAction</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_FixAction" name="Retry?" default="Flow_Cancel">
+      <bpmn:incoming>Flow_ToFixAction</bpmn:incoming>
+      <bpmn:outgoing>Flow_Retry</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Cancel</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:scriptTask id="Script_SetServiceError" name="Set service error">
+      <bpmn:extensionElements>
+        <zeebe:script expression="=&#34;SERVICE_UNAVAILABLE&#34;" resultVariable="outcome" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Cancel</bpmn:incoming>
+      <bpmn:outgoing>Flow_ServiceErrorToMerge</bpmn:outgoing>
+    </bpmn:scriptTask>
     <bpmn:scriptTask id="Script_DetectConflict" name="Detect conflict">
       <bpmn:extensionElements>
-        <zeebe:script expression="={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour &#60; slot.endHour and item.endHour &#62; slot.startHour]) &#62; 0 }" resultVariable="conflictCheck" />
+        <zeebe:script expression="={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour &lt; slot.endHour and item.endHour &gt; slot.startHour]) &gt; 0 }" resultVariable="conflictCheck" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToDetect</bpmn:incoming>
       <bpmn:outgoing>Flow_ToSlotOk</bpmn:outgoing>
@@ -49,7 +106,7 @@
     </bpmn:exclusiveGateway>
     <bpmn:scriptTask id="Script_SetReason" name="Set rejection reason">
       <bpmn:extensionElements>
-        <zeebe:script expression="=if slot.durationHours &#60;= 0 then &#34;INVALID_TIME&#34; else &#34;CONFLICT&#34;" resultVariable="outcome" />
+        <zeebe:script expression="=&#34;CONFLICT&#34;" resultVariable="outcome" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_SlotTaken</bpmn:incoming>
       <bpmn:outgoing>Flow_ReasonToMerge</bpmn:outgoing>
@@ -77,31 +134,36 @@
         <zeebe:taskHeaders>
           <zeebe:header key="elementTemplateVersion" value="12" />
           <zeebe:header key="elementTemplateId" value="io.camunda.connectors.HttpJson.v2" />
-          <zeebe:header key="resultExpression" value="={bookingId: response.body.id}" />
+          <zeebe:header key="resultExpression" value="={bookingId: response.body.id, bookingRef: &#34;BK-&#34; + string(response.body.id)}" />
           <zeebe:header key="retryBackoff" value="PT0S" />
         </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToHold</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToApproval</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToSendRequest</bpmn:outgoing>
     </bpmn:serviceTask>
-    <bpmn:userTask id="User_Approval" name="Admin approval">
+    <bpmn:sendTask id="Send_ApprovalRequest" name="Send approval request">
       <bpmn:extensionElements>
-        <zeebe:userTask />
-        <zeebe:formDefinition formId="approval-form" />
+        <zeebe:taskDefinition type="publish-message" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=bookingRef" target="correlationKey" />
+          <zeebe:input source="={requesterName: requesterName, email: email, venue: venue, bookingDate: bookingDate, startTime: startTime, endTime: endTime, attendees: attendees, purpose: purpose, approver: approver, bookingId: bookingId, bookingRef: bookingRef}" target="messageVariables" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="messageName" value="booking-approval-request" />
+        </zeebe:taskHeaders>
       </bpmn:extensionElements>
-      <bpmn:incoming>Flow_ToApproval</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToApproved</bpmn:outgoing>
-    </bpmn:userTask>
-    <bpmn:boundaryEvent id="Timer_Timeout" name="Not approved in time" attachedToRef="User_Approval">
+      <bpmn:incoming>Flow_ToSendRequest</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToReceive</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="Receive_Decision" name="Wait for decision" messageRef="Message_ApprovalDecision">
+      <bpmn:incoming>Flow_ToReceive</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToDecision</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:exclusiveGateway id="Gateway_Decision" name="Decision?" default="Flow_Rejected">
+      <bpmn:incoming>Flow_ToDecision</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Rejected</bpmn:outgoing>
       <bpmn:outgoing>Flow_Expired</bpmn:outgoing>
-      <bpmn:timerEventDefinition id="TimerEventDefinition_Timeout">
-        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT2M</bpmn:timeDuration>
-      </bpmn:timerEventDefinition>
-    </bpmn:boundaryEvent>
-    <bpmn:exclusiveGateway id="Gateway_Approved" name="Approved?" default="Flow_No">
-      <bpmn:incoming>Flow_ToApproved</bpmn:incoming>
-      <bpmn:outgoing>Flow_Yes</bpmn:outgoing>
-      <bpmn:outgoing>Flow_No</bpmn:outgoing>
     </bpmn:exclusiveGateway>
     <bpmn:serviceTask id="Rest_ConfirmSlot" name="Confirm slot" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
       <bpmn:extensionElements>
@@ -123,7 +185,7 @@
           <zeebe:header key="retryBackoff" value="PT0S" />
         </zeebe:taskHeaders>
       </bpmn:extensionElements>
-      <bpmn:incoming>Flow_Yes</bpmn:incoming>
+      <bpmn:incoming>Flow_Approved</bpmn:incoming>
       <bpmn:outgoing>Flow_ConfirmToMerge</bpmn:outgoing>
     </bpmn:serviceTask>
     <bpmn:serviceTask id="Rest_ReleaseRejected" name="Release slot (rejected)" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
@@ -144,7 +206,7 @@
           <zeebe:header key="retryBackoff" value="PT0S" />
         </zeebe:taskHeaders>
       </bpmn:extensionElements>
-      <bpmn:incoming>Flow_No</bpmn:incoming>
+      <bpmn:incoming>Flow_Rejected</bpmn:incoming>
       <bpmn:outgoing>Flow_RejectToMerge</bpmn:outgoing>
     </bpmn:serviceTask>
     <bpmn:serviceTask id="Rest_ReleaseExpired" name="Release slot (expired)" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
@@ -169,31 +231,22 @@
       <bpmn:outgoing>Flow_ExpireToMerge</bpmn:outgoing>
     </bpmn:serviceTask>
     <bpmn:exclusiveGateway id="Gateway_Merge">
+      <bpmn:incoming>Flow_Invalid</bpmn:incoming>
       <bpmn:incoming>Flow_ReasonToMerge</bpmn:incoming>
+      <bpmn:incoming>Flow_ServiceErrorToMerge</bpmn:incoming>
       <bpmn:incoming>Flow_ConfirmToMerge</bpmn:incoming>
       <bpmn:incoming>Flow_RejectToMerge</bpmn:incoming>
       <bpmn:incoming>Flow_ExpireToMerge</bpmn:incoming>
       <bpmn:outgoing>Flow_ToNotify</bpmn:outgoing>
     </bpmn:exclusiveGateway>
-    <bpmn:serviceTask id="Rest_Notify" name="Notify requester" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
+    <bpmn:serviceTask id="Worker_Notify" name="Notify requester">
       <bpmn:extensionElements>
-        <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
+        <zeebe:taskDefinition type="send-notification" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="noAuth" target="authentication.type" />
-          <zeebe:input source="POST" target="method" />
-          <zeebe:input source="{{secrets.MOCK_BASE_URL}}/notifications" target="url" />
-          <zeebe:input source="false" target="storeResponse" />
-          <zeebe:input source="20" target="connectionTimeoutInSeconds" />
-          <zeebe:input source="20" target="readTimeoutInSeconds" />
-          <zeebe:input source="={&#10;  to: email,&#10;  subject: &#34;Hall booking &#34; + outcome,&#10;  message: if outcome = &#34;APPROVED&#34; then &#34;Your booking of &#34; + venue + &#34; on &#34; + bookingDate + &#34; (&#34; + startTime + &#34;-&#34; + endTime + &#34;) is confirmed.&#34;&#10;    else if outcome = &#34;REJECTED&#34; then &#34;Your booking request was rejected by the approver.&#34;&#10;    else if outcome = &#34;EXPIRED&#34; then &#34;Your request was auto-cancelled because it was not approved in time.&#34;&#10;    else if outcome = &#34;CONFLICT&#34; then &#34;That slot is already booked. Please choose another time.&#34;&#10;    else &#34;The end time must be after the start time.&#34;&#10;}" target="body" />
-          <zeebe:input source="false" target="ignoreNullValues" />
+          <zeebe:input source="=email" target="to" />
+          <zeebe:input source="=&#34;Hall booking &#34; + outcome" target="subject" />
+          <zeebe:input source="=if outcome = &#34;APPROVED&#34; then &#34;Your booking of &#34; + venue + &#34; on &#34; + bookingDate + &#34; (&#34; + startTime + &#34;-&#34; + endTime + &#34;) is confirmed.&#34;&#10;else if outcome = &#34;REJECTED&#34; then &#34;Your booking request was rejected by the approver.&#34; + (if decision.remarks != null and decision.remarks != &#34;&#34; then &#34; Remarks: &#34; + decision.remarks else &#34;&#34;)&#10;else if outcome = &#34;EXPIRED&#34; then &#34;Your request was auto-cancelled because it was not approved in time.&#34;&#10;else if outcome = &#34;CONFLICT&#34; then &#34;That slot is already booked. Please choose another time.&#34;&#10;else if outcome = &#34;OVER_CAPACITY&#34; then venue + &#34; holds at most &#34; + string(validation.capacity) + &#34; people; you asked for &#34; + string(attendees) + &#34;.&#34;&#10;else if outcome = &#34;PAST_DATE&#34; then &#34;The booking date &#34; + bookingDate + &#34; has already passed.&#34;&#10;else if outcome = &#34;SERVICE_UNAVAILABLE&#34; then &#34;The booking service was unavailable, so your request was cancelled. Please try again later.&#34;&#10;else &#34;The end time must be after the start time.&#34;" target="message" />
         </zeebe:ioMapping>
-        <zeebe:taskHeaders>
-          <zeebe:header key="elementTemplateVersion" value="12" />
-          <zeebe:header key="elementTemplateId" value="io.camunda.connectors.HttpJson.v2" />
-          <zeebe:header key="resultExpression" value="={notificationId: response.body.id}" />
-          <zeebe:header key="retryBackoff" value="PT0S" />
-        </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToNotify</bpmn:incoming>
       <bpmn:outgoing>Flow_ToEnd</bpmn:outgoing>
@@ -201,186 +254,391 @@
     <bpmn:endEvent id="EndEvent_Done" name="Done">
       <bpmn:incoming>Flow_ToEnd</bpmn:incoming>
     </bpmn:endEvent>
+
     <bpmn:sequenceFlow id="Flow_ToPrepare" sourceRef="StartEvent_Requested" targetRef="Script_PrepareSlot" />
-    <bpmn:sequenceFlow id="Flow_ToFetch" sourceRef="Script_PrepareSlot" targetRef="Rest_FetchBookings" />
+    <bpmn:sequenceFlow id="Flow_ToValidate" sourceRef="Script_PrepareSlot" targetRef="Worker_ValidateRequest" />
+    <bpmn:sequenceFlow id="Flow_ToValid" sourceRef="Worker_ValidateRequest" targetRef="Gateway_Valid" />
+    <bpmn:sequenceFlow id="Flow_Invalid" name="Invalid" sourceRef="Gateway_Valid" targetRef="Gateway_Merge">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=validation.valid = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Valid" name="Valid" sourceRef="Gateway_Valid" targetRef="Gateway_FetchRetry" />
+    <bpmn:sequenceFlow id="Flow_ToFetch" sourceRef="Gateway_FetchRetry" targetRef="Rest_FetchBookings" />
+    <bpmn:sequenceFlow id="Flow_ServiceDown" sourceRef="Boundary_ServiceDown" targetRef="User_FixService" />
+    <bpmn:sequenceFlow id="Flow_ToFixAction" sourceRef="User_FixService" targetRef="Gateway_FixAction" />
+    <bpmn:sequenceFlow id="Flow_Retry" name="Retry" sourceRef="Gateway_FixAction" targetRef="Gateway_FetchRetry">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=serviceFixAction = "RETRY"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Cancel" name="Cancel" sourceRef="Gateway_FixAction" targetRef="Script_SetServiceError" />
+    <bpmn:sequenceFlow id="Flow_ServiceErrorToMerge" sourceRef="Script_SetServiceError" targetRef="Gateway_Merge" />
     <bpmn:sequenceFlow id="Flow_ToDetect" sourceRef="Rest_FetchBookings" targetRef="Script_DetectConflict" />
     <bpmn:sequenceFlow id="Flow_ToSlotOk" sourceRef="Script_DetectConflict" targetRef="Gateway_SlotOk" />
-    <bpmn:sequenceFlow id="Flow_SlotTaken" name="Conflict or invalid time" sourceRef="Gateway_SlotOk" targetRef="Script_SetReason">
-      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=slot.durationHours &lt;= 0 or conflictCheck.hasConflict</bpmn:conditionExpression>
+    <bpmn:sequenceFlow id="Flow_SlotTaken" name="Conflict" sourceRef="Gateway_SlotOk" targetRef="Script_SetReason">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=conflictCheck.hasConflict = true</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_SlotFree" name="Free" sourceRef="Gateway_SlotOk" targetRef="Dmn_DecideApprover" />
-    <bpmn:sequenceFlow id="Flow_ToHold" sourceRef="Dmn_DecideApprover" targetRef="Rest_HoldSlot" />
-    <bpmn:sequenceFlow id="Flow_ToApproval" sourceRef="Rest_HoldSlot" targetRef="User_Approval" />
-    <bpmn:sequenceFlow id="Flow_ToApproved" sourceRef="User_Approval" targetRef="Gateway_Approved" />
-    <bpmn:sequenceFlow id="Flow_Expired" sourceRef="Timer_Timeout" targetRef="Rest_ReleaseExpired" />
-    <bpmn:sequenceFlow id="Flow_Yes" name="Approved" sourceRef="Gateway_Approved" targetRef="Rest_ConfirmSlot">
-      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=approved = true</bpmn:conditionExpression>
-    </bpmn:sequenceFlow>
-    <bpmn:sequenceFlow id="Flow_No" name="Rejected" sourceRef="Gateway_Approved" targetRef="Rest_ReleaseRejected" />
     <bpmn:sequenceFlow id="Flow_ReasonToMerge" sourceRef="Script_SetReason" targetRef="Gateway_Merge" />
+    <bpmn:sequenceFlow id="Flow_ToHold" sourceRef="Dmn_DecideApprover" targetRef="Rest_HoldSlot" />
+    <bpmn:sequenceFlow id="Flow_ToSendRequest" sourceRef="Rest_HoldSlot" targetRef="Send_ApprovalRequest" />
+    <bpmn:sequenceFlow id="Flow_ToReceive" sourceRef="Send_ApprovalRequest" targetRef="Receive_Decision" />
+    <bpmn:sequenceFlow id="Flow_ToDecision" sourceRef="Receive_Decision" targetRef="Gateway_Decision" />
+    <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_Decision" targetRef="Rest_ConfirmSlot">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=decision.outcome = "APPROVED"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Rejected" name="Rejected" sourceRef="Gateway_Decision" targetRef="Rest_ReleaseRejected" />
+    <bpmn:sequenceFlow id="Flow_Expired" name="Expired" sourceRef="Gateway_Decision" targetRef="Rest_ReleaseExpired">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=decision.outcome = "EXPIRED"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_ConfirmToMerge" sourceRef="Rest_ConfirmSlot" targetRef="Gateway_Merge" />
     <bpmn:sequenceFlow id="Flow_RejectToMerge" sourceRef="Rest_ReleaseRejected" targetRef="Gateway_Merge" />
     <bpmn:sequenceFlow id="Flow_ExpireToMerge" sourceRef="Rest_ReleaseExpired" targetRef="Gateway_Merge" />
-    <bpmn:sequenceFlow id="Flow_ToNotify" sourceRef="Gateway_Merge" targetRef="Rest_Notify" />
-    <bpmn:sequenceFlow id="Flow_ToEnd" sourceRef="Rest_Notify" targetRef="EndEvent_Done" />
+    <bpmn:sequenceFlow id="Flow_ToNotify" sourceRef="Gateway_Merge" targetRef="Worker_Notify" />
+    <bpmn:sequenceFlow id="Flow_ToEnd" sourceRef="Worker_Notify" targetRef="EndEvent_Done" />
   </bpmn:process>
+
+  <!-- ===================== Pool 2: Hall Administration ===================== -->
+  <bpmn:process id="hall-approval" name="Hall Approval" isExecutable="true">
+    <bpmn:startEvent id="MsgStart_ApprovalRequested" name="Approval request received">
+      <bpmn:outgoing>Flow_ToReview</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_ApprovalRequest" messageRef="Message_ApprovalRequest" />
+    </bpmn:startEvent>
+    <bpmn:userTask id="User_Approval" name="Review booking">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:formDefinition formId="approval-form" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToRecord</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="Timer_Reminder" name="After 1 min" cancelActivity="false" attachedToRef="User_Approval">
+      <bpmn:outgoing>Flow_Reminder</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDefinition_Reminder">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT1M</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Timer_Timeout" name="After 2 min" attachedToRef="User_Approval">
+      <bpmn:outgoing>Flow_Timeout</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDefinition_Timeout">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT2M</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Worker_Reminder" name="Remind approver">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-reminder" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=approver" target="approverRole" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Reminder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReminderToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_Reminded" name="Reminder sent">
+      <bpmn:incoming>Flow_ReminderToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:scriptTask id="Script_RecordDecision" name="Record decision">
+      <bpmn:extensionElements>
+        <zeebe:script expression="={outcome: if approved = true then &#34;APPROVED&#34; else &#34;REJECTED&#34;, remarks: remarks}" resultVariable="decision" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToRecord</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordToMerge</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:scriptTask id="Script_MarkExpired" name="Mark as expired">
+      <bpmn:extensionElements>
+        <zeebe:script expression="={outcome: &#34;EXPIRED&#34;, remarks: &#34;Not reviewed within 2 minutes&#34;}" resultVariable="decision" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Timeout</bpmn:incoming>
+      <bpmn:outgoing>Flow_ExpiredToMerge</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:exclusiveGateway id="Gateway_DecisionMerge">
+      <bpmn:incoming>Flow_RecordToMerge</bpmn:incoming>
+      <bpmn:incoming>Flow_ExpiredToMerge</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToSendDecision</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sendTask id="Send_Decision" name="Send decision">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="publish-message" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=bookingRef" target="correlationKey" />
+          <zeebe:input source="={decision: decision}" target="messageVariables" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="messageName" value="booking-approval-decision" />
+        </zeebe:taskHeaders>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToSendDecision</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToDecided</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_Decided" name="Decision sent">
+      <bpmn:incoming>Flow_ToDecided</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_ToReview" sourceRef="MsgStart_ApprovalRequested" targetRef="User_Approval" />
+    <bpmn:sequenceFlow id="Flow_ToRecord" sourceRef="User_Approval" targetRef="Script_RecordDecision" />
+    <bpmn:sequenceFlow id="Flow_Reminder" sourceRef="Timer_Reminder" targetRef="Worker_Reminder" />
+    <bpmn:sequenceFlow id="Flow_ReminderToEnd" sourceRef="Worker_Reminder" targetRef="End_Reminded" />
+    <bpmn:sequenceFlow id="Flow_Timeout" sourceRef="Timer_Timeout" targetRef="Script_MarkExpired" />
+    <bpmn:sequenceFlow id="Flow_RecordToMerge" sourceRef="Script_RecordDecision" targetRef="Gateway_DecisionMerge" />
+    <bpmn:sequenceFlow id="Flow_ExpiredToMerge" sourceRef="Script_MarkExpired" targetRef="Gateway_DecisionMerge" />
+    <bpmn:sequenceFlow id="Flow_ToSendDecision" sourceRef="Gateway_DecisionMerge" targetRef="Send_Decision" />
+    <bpmn:sequenceFlow id="Flow_ToDecided" sourceRef="Send_Decision" targetRef="End_Decided" />
+  </bpmn:process>
+
   <bpmndi:BPMNDiagram id="BPMNDiagram_HallBooking">
-    <bpmndi:BPMNPlane id="BPMNPlane_HallBooking" bpmnElement="hall-booking">
+    <bpmndi:BPMNPlane id="BPMNPlane_HallBooking" bpmnElement="Collaboration_HallBooking">
+      <!-- Pool 1 -->
+      <bpmndi:BPMNShape id="Participant_BookingDesk_di" bpmnElement="Participant_BookingDesk" isHorizontal="true">
+        <dc:Bounds x="120" y="40" width="2280" height="610" />
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="StartEvent_Requested_di" bpmnElement="StartEvent_Requested">
-        <dc:Bounds x="152" y="182" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="126" y="225" width="88" height="14" />
-        </bpmndi:BPMNLabel>
+        <dc:Bounds x="182" y="272" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="156" y="315" width="88" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_PrepareSlot_di" bpmnElement="Script_PrepareSlot">
-        <dc:Bounds x="240" y="160" width="100" height="80" />
+        <dc:Bounds x="270" y="250" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Worker_ValidateRequest_di" bpmnElement="Worker_ValidateRequest">
+        <dc:Bounds x="420" y="250" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Valid_di" bpmnElement="Gateway_Valid" isMarkerVisible="true">
+        <dc:Bounds x="575" y="265" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="561" y="322" width="78" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_FetchRetry_di" bpmnElement="Gateway_FetchRetry" isMarkerVisible="true">
+        <dc:Bounds x="675" y="265" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Rest_FetchBookings_di" bpmnElement="Rest_FetchBookings">
-        <dc:Bounds x="400" y="160" width="100" height="80" />
+        <dc:Bounds x="780" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_DetectConflict_di" bpmnElement="Script_DetectConflict">
-        <dc:Bounds x="560" y="160" width="100" height="80" />
+        <dc:Bounds x="940" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_SlotOk_di" bpmnElement="Gateway_SlotOk" isMarkerVisible="true">
-        <dc:Bounds x="715" y="175" width="50" height="50" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="702" y="232" width="76" height="14" />
-        </bpmndi:BPMNLabel>
+        <dc:Bounds x="1095" y="265" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1081" y="322" width="78" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_SetReason_di" bpmnElement="Script_SetReason">
-        <dc:Bounds x="820" y="30" width="100" height="80" />
+        <dc:Bounds x="1200" y="120" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Dmn_DecideApprover_di" bpmnElement="Dmn_DecideApprover">
-        <dc:Bounds x="820" y="160" width="100" height="80" />
+        <dc:Bounds x="1200" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Rest_HoldSlot_di" bpmnElement="Rest_HoldSlot">
-        <dc:Bounds x="980" y="160" width="100" height="80" />
+        <dc:Bounds x="1360" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="User_Approval_di" bpmnElement="User_Approval">
-        <dc:Bounds x="1140" y="160" width="100" height="80" />
+      <bpmndi:BPMNShape id="Send_ApprovalRequest_di" bpmnElement="Send_ApprovalRequest">
+        <dc:Bounds x="1520" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_Approved_di" bpmnElement="Gateway_Approved" isMarkerVisible="true">
-        <dc:Bounds x="1295" y="175" width="50" height="50" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1294" y="151" width="53" height="14" />
-        </bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Receive_Decision_di" bpmnElement="Receive_Decision">
+        <dc:Bounds x="1680" y="250" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Decision_di" bpmnElement="Gateway_Decision" isMarkerVisible="true">
+        <dc:Bounds x="1835" y="265" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1836" y="243" width="48" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Rest_ConfirmSlot_di" bpmnElement="Rest_ConfirmSlot">
-        <dc:Bounds x="1400" y="160" width="100" height="80" />
+        <dc:Bounds x="1940" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Rest_ReleaseRejected_di" bpmnElement="Rest_ReleaseRejected">
-        <dc:Bounds x="1400" y="290" width="100" height="80" />
+        <dc:Bounds x="1940" y="390" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Rest_ReleaseExpired_di" bpmnElement="Rest_ReleaseExpired">
-        <dc:Bounds x="1400" y="420" width="100" height="80" />
+        <dc:Bounds x="1940" y="510" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_Merge_di" bpmnElement="Gateway_Merge" isMarkerVisible="true">
-        <dc:Bounds x="1560" y="175" width="50" height="50" />
+        <dc:Bounds x="2095" y="265" width="50" height="50" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Rest_Notify_di" bpmnElement="Rest_Notify">
-        <dc:Bounds x="1660" y="160" width="100" height="80" />
+      <bpmndi:BPMNShape id="Worker_Notify_di" bpmnElement="Worker_Notify">
+        <dc:Bounds x="2180" y="250" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_Done_di" bpmnElement="EndEvent_Done">
-        <dc:Bounds x="1822" y="182" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1827" y="225" width="27" height="14" />
-        </bpmndi:BPMNLabel>
+        <dc:Bounds x="2322" y="272" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="2327" y="315" width="27" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Timer_Timeout_di" bpmnElement="Timer_Timeout">
-        <dc:Bounds x="1172" y="222" width="36" height="36" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1212" y="262" width="76" height="27" />
-        </bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="User_FixService_di" bpmnElement="User_FixService">
+        <dc:Bounds x="780" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_FixAction_di" bpmnElement="Gateway_FixAction" isMarkerVisible="true">
+        <dc:Bounds x="935" y="405" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="943" y="385" width="34" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_SetServiceError_di" bpmnElement="Script_SetServiceError">
+        <dc:Bounds x="1040" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_ServiceDown_di" bpmnElement="Boundary_ServiceDown">
+        <dc:Bounds x="812" y="312" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="840" y="352" width="66" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="Flow_ToPrepare_di" bpmnElement="Flow_ToPrepare">
-        <di:waypoint x="188" y="200" />
-        <di:waypoint x="240" y="200" />
+        <di:waypoint x="218" y="290" /><di:waypoint x="270" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToValidate_di" bpmnElement="Flow_ToValidate">
+        <di:waypoint x="370" y="290" /><di:waypoint x="420" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToValid_di" bpmnElement="Flow_ToValid">
+        <di:waypoint x="520" y="290" /><di:waypoint x="575" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Invalid_di" bpmnElement="Flow_Invalid">
+        <di:waypoint x="600" y="265" /><di:waypoint x="600" y="80" /><di:waypoint x="2120" y="80" /><di:waypoint x="2120" y="265" />
+        <bpmndi:BPMNLabel><dc:Bounds x="607" y="170" width="34" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Valid_di" bpmnElement="Flow_Valid">
+        <di:waypoint x="625" y="290" /><di:waypoint x="675" y="290" />
+        <bpmndi:BPMNLabel><dc:Bounds x="636" y="272" width="26" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToFetch_di" bpmnElement="Flow_ToFetch">
-        <di:waypoint x="340" y="200" />
-        <di:waypoint x="400" y="200" />
+        <di:waypoint x="725" y="290" /><di:waypoint x="780" y="290" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToDetect_di" bpmnElement="Flow_ToDetect">
-        <di:waypoint x="500" y="200" />
-        <di:waypoint x="560" y="200" />
+        <di:waypoint x="880" y="290" /><di:waypoint x="940" y="290" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToSlotOk_di" bpmnElement="Flow_ToSlotOk">
-        <di:waypoint x="660" y="200" />
-        <di:waypoint x="715" y="200" />
+        <di:waypoint x="1040" y="290" /><di:waypoint x="1095" y="290" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_SlotTaken_di" bpmnElement="Flow_SlotTaken">
-        <di:waypoint x="740" y="175" />
-        <di:waypoint x="740" y="70" />
-        <di:waypoint x="820" y="70" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="748" y="112" width="64" height="27" />
-        </bpmndi:BPMNLabel>
+        <di:waypoint x="1120" y="265" /><di:waypoint x="1120" y="160" /><di:waypoint x="1200" y="160" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1127" y="205" width="40" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_SlotFree_di" bpmnElement="Flow_SlotFree">
-        <di:waypoint x="765" y="200" />
-        <di:waypoint x="820" y="200" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="781" y="182" width="23" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToHold_di" bpmnElement="Flow_ToHold">
-        <di:waypoint x="920" y="200" />
-        <di:waypoint x="980" y="200" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToApproval_di" bpmnElement="Flow_ToApproval">
-        <di:waypoint x="1080" y="200" />
-        <di:waypoint x="1140" y="200" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToApproved_di" bpmnElement="Flow_ToApproved">
-        <di:waypoint x="1240" y="200" />
-        <di:waypoint x="1295" y="200" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Expired_di" bpmnElement="Flow_Expired">
-        <di:waypoint x="1190" y="258" />
-        <di:waypoint x="1190" y="460" />
-        <di:waypoint x="1400" y="460" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Yes_di" bpmnElement="Flow_Yes">
-        <di:waypoint x="1345" y="200" />
-        <di:waypoint x="1400" y="200" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1349" y="182" width="47" height="14" />
-        </bpmndi:BPMNLabel>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_No_di" bpmnElement="Flow_No">
-        <di:waypoint x="1320" y="225" />
-        <di:waypoint x="1320" y="330" />
-        <di:waypoint x="1400" y="330" />
-        <bpmndi:BPMNLabel>
-          <dc:Bounds x="1331" y="312" width="45" height="14" />
-        </bpmndi:BPMNLabel>
+        <di:waypoint x="1145" y="290" /><di:waypoint x="1200" y="290" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1161" y="272" width="23" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ReasonToMerge_di" bpmnElement="Flow_ReasonToMerge">
-        <di:waypoint x="920" y="70" />
-        <di:waypoint x="1585" y="70" />
-        <di:waypoint x="1585" y="175" />
+        <di:waypoint x="1300" y="160" /><di:waypoint x="2120" y="160" /><di:waypoint x="2120" y="265" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToHold_di" bpmnElement="Flow_ToHold">
+        <di:waypoint x="1300" y="290" /><di:waypoint x="1360" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToSendRequest_di" bpmnElement="Flow_ToSendRequest">
+        <di:waypoint x="1460" y="290" /><di:waypoint x="1520" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToReceive_di" bpmnElement="Flow_ToReceive">
+        <di:waypoint x="1620" y="290" /><di:waypoint x="1680" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDecision_di" bpmnElement="Flow_ToDecision">
+        <di:waypoint x="1780" y="290" /><di:waypoint x="1835" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved">
+        <di:waypoint x="1885" y="290" /><di:waypoint x="1940" y="290" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1889" y="272" width="47" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Rejected_di" bpmnElement="Flow_Rejected">
+        <di:waypoint x="1860" y="315" /><di:waypoint x="1860" y="430" /><di:waypoint x="1940" y="430" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1873" y="412" width="45" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Expired_di" bpmnElement="Flow_Expired">
+        <di:waypoint x="1860" y="315" /><di:waypoint x="1860" y="550" /><di:waypoint x="1940" y="550" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1873" y="532" width="40" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ConfirmToMerge_di" bpmnElement="Flow_ConfirmToMerge">
-        <di:waypoint x="1500" y="200" />
-        <di:waypoint x="1560" y="200" />
+        <di:waypoint x="2040" y="290" /><di:waypoint x="2095" y="290" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_RejectToMerge_di" bpmnElement="Flow_RejectToMerge">
-        <di:waypoint x="1500" y="330" />
-        <di:waypoint x="1585" y="330" />
-        <di:waypoint x="1585" y="225" />
+        <di:waypoint x="2040" y="430" /><di:waypoint x="2120" y="430" /><di:waypoint x="2120" y="315" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ExpireToMerge_di" bpmnElement="Flow_ExpireToMerge">
-        <di:waypoint x="1500" y="460" />
-        <di:waypoint x="1585" y="460" />
-        <di:waypoint x="1585" y="225" />
+        <di:waypoint x="2040" y="550" /><di:waypoint x="2120" y="550" /><di:waypoint x="2120" y="315" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToNotify_di" bpmnElement="Flow_ToNotify">
-        <di:waypoint x="1610" y="200" />
-        <di:waypoint x="1660" y="200" />
+        <di:waypoint x="2145" y="290" /><di:waypoint x="2180" y="290" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToEnd_di" bpmnElement="Flow_ToEnd">
-        <di:waypoint x="1760" y="200" />
-        <di:waypoint x="1822" y="200" />
+        <di:waypoint x="2280" y="290" /><di:waypoint x="2322" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ServiceDown_di" bpmnElement="Flow_ServiceDown">
+        <di:waypoint x="830" y="348" /><di:waypoint x="830" y="390" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToFixAction_di" bpmnElement="Flow_ToFixAction">
+        <di:waypoint x="880" y="430" /><di:waypoint x="935" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Retry_di" bpmnElement="Flow_Retry">
+        <di:waypoint x="960" y="455" /><di:waypoint x="960" y="500" /><di:waypoint x="700" y="500" /><di:waypoint x="700" y="315" />
+        <bpmndi:BPMNLabel><dc:Bounds x="815" y="482" width="28" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Cancel_di" bpmnElement="Flow_Cancel">
+        <di:waypoint x="985" y="430" /><di:waypoint x="1040" y="430" />
+        <bpmndi:BPMNLabel><dc:Bounds x="993" y="412" width="35" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ServiceErrorToMerge_di" bpmnElement="Flow_ServiceErrorToMerge">
+        <di:waypoint x="1090" y="470" /><di:waypoint x="1090" y="610" /><di:waypoint x="2120" y="610" /><di:waypoint x="2120" y="315" />
+      </bpmndi:BPMNEdge>
+
+      <!-- Pool 2 -->
+      <bpmndi:BPMNShape id="Participant_HallAdmin_di" bpmnElement="Participant_HallAdmin" isHorizontal="true">
+        <dc:Bounds x="880" y="700" width="1120" height="350" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MsgStart_ApprovalRequested_di" bpmnElement="MsgStart_ApprovalRequested">
+        <dc:Bounds x="942" y="802" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="918" y="845" width="84" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="User_Approval_di" bpmnElement="User_Approval">
+        <dc:Bounds x="1060" y="780" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Worker_Reminder_di" bpmnElement="Worker_Reminder">
+        <dc:Bounds x="1035" y="920" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Reminded_di" bpmnElement="End_Reminded">
+        <dc:Bounds x="1172" y="942" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1155" y="985" width="70" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_RecordDecision_di" bpmnElement="Script_RecordDecision">
+        <dc:Bounds x="1240" y="780" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_MarkExpired_di" bpmnElement="Script_MarkExpired">
+        <dc:Bounds x="1240" y="920" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_DecisionMerge_di" bpmnElement="Gateway_DecisionMerge" isMarkerVisible="true">
+        <dc:Bounds x="1415" y="795" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Send_Decision_di" bpmnElement="Send_Decision">
+        <dc:Bounds x="1680" y="780" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Decided_di" bpmnElement="End_Decided">
+        <dc:Bounds x="1832" y="802" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1817" y="845" width="66" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_Reminder_di" bpmnElement="Timer_Reminder">
+        <dc:Bounds x="1067" y="842" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1003" y="880" width="58" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_Timeout_di" bpmnElement="Timer_Timeout">
+        <dc:Bounds x="1117" y="842" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1160" y="872" width="58" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ToReview_di" bpmnElement="Flow_ToReview">
+        <di:waypoint x="978" y="820" /><di:waypoint x="1060" y="820" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToRecord_di" bpmnElement="Flow_ToRecord">
+        <di:waypoint x="1160" y="820" /><di:waypoint x="1240" y="820" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Reminder_di" bpmnElement="Flow_Reminder">
+        <di:waypoint x="1085" y="878" /><di:waypoint x="1085" y="920" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReminderToEnd_di" bpmnElement="Flow_ReminderToEnd">
+        <di:waypoint x="1135" y="960" /><di:waypoint x="1172" y="960" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Timeout_di" bpmnElement="Flow_Timeout">
+        <di:waypoint x="1135" y="878" /><di:waypoint x="1135" y="900" /><di:waypoint x="1290" y="900" /><di:waypoint x="1290" y="920" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordToMerge_di" bpmnElement="Flow_RecordToMerge">
+        <di:waypoint x="1340" y="820" /><di:waypoint x="1415" y="820" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ExpiredToMerge_di" bpmnElement="Flow_ExpiredToMerge">
+        <di:waypoint x="1340" y="960" /><di:waypoint x="1440" y="960" /><di:waypoint x="1440" y="845" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToSendDecision_di" bpmnElement="Flow_ToSendDecision">
+        <di:waypoint x="1465" y="820" /><di:waypoint x="1680" y="820" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDecided_di" bpmnElement="Flow_ToDecided">
+        <di:waypoint x="1780" y="820" /><di:waypoint x="1832" y="820" />
+      </bpmndi:BPMNEdge>
+
+      <!-- Message flows between the pools -->
+      <bpmndi:BPMNEdge id="MsgFlow_ApprovalRequest_di" bpmnElement="MsgFlow_ApprovalRequest">
+        <di:waypoint x="1570" y="330" /><di:waypoint x="1570" y="680" /><di:waypoint x="960" y="680" /><di:waypoint x="960" y="802" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1480" y="662" width="84" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MsgFlow_ApprovalDecision_di" bpmnElement="MsgFlow_ApprovalDecision">
+        <di:waypoint x="1730" y="780" /><di:waypoint x="1730" y="330" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1737" y="662" width="42" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>

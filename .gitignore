@@ -5,3 +5,6 @@ hall-booking/mock/db.json
 node_modules/
 *.log
 ~$*
+
+# Emails and reminders written by the worker
+hall-booking/worker/outbox/

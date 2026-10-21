@@ -1,106 +1,83 @@
-# Seminar Hall & Lab Booking (Camunda 8, BPMN + DMN)
+# Seminar Hall & Lab Booking (Camunda 8, two pools + external worker)
 
-A booking workflow with no Java code. A requester fills a form; FEEL scripts work out the slot and check
-it against existing bookings fetched over REST; a DMN table picks the approver; the slot is held while
-an admin approves in Tasklist; and a 2-minute timer releases the slot automatically if nobody acts.
-Every path ends with a notification.
+A booking workflow drawn as a **collaboration of two pools**. The **Booking Desk** validates a request (through our
+external worker), checks it for clashes against a REST booking service, asks a DMN table who must approve, holds the
+slot, and sends an approval request to the **Hall Administration**. There, an approver reviews it, gets a reminder
+after 1 minute, and the request expires after 2 minutes. The decision goes back by message; the slot is confirmed or
+released; the requester is notified. If the booking service is down, an admin chooses Retry or Cancel.
 
-Runs on **Camunda 8 Run 8.8 (local)**. A mock REST API (json-server) plays the booking database.
-
-```
-Booking requested -> Prepare slot -> Fetch existing bookings -> Detect conflict -> <Slot available?>
-   conflict / invalid time -> Set rejection reason ---------------------------------------------+
-   free -> Decide approver (DMN) -> Hold slot -> Admin approval -> <Approved?>                   |
-                                                  |  yes -> Confirm slot ------------------------+
-                                                  |  no  -> Release slot (rejected) -------------+
-                                                  +-(timer 2 min)-> Release slot (expired) ------+-> Notify requester -> Done
-```
+Runs on **Camunda 8 Run 8.8 (local)**. A mock REST API (json-server) plays the booking database. Full explanation:
+[`../PROJECT-GUIDE.md`](../PROJECT-GUIDE.md). Specification: [`../PLAN.md`](../PLAN.md).
 
 | Course requirement | Where |
 |---|---|
-| User task with a Camunda Form | `User_Approval` + `approval-form`; start form `booking-request-form` |
-| Exclusive gateway | `Gateway_SlotOk`, `Gateway_Approved` (both with default flows) |
-| Script task (FEEL) | `Script_PrepareSlot`, `Script_DetectConflict`, `Script_SetReason` |
-| REST connector | `Rest_FetchBookings`, `Rest_HoldSlot`, `Rest_ConfirmSlot`, `Rest_Release*`, `Rest_Notify` |
-| Business rule task (DMN) | `Dmn_DecideApprover` -> `decide-approver.dmn` |
-| Timer boundary event | `Timer_Timeout` (interrupting, `PT2M`) on `User_Approval` |
-| Notification step | `Rest_Notify` -> `POST /notifications` |
+| User tasks with Camunda Forms | *Review booking* (`approval-form`), *Resolve service issue* (`service-fix-form`); start form `booking-request-form` |
+| Exclusive gateways (with default flows) | Request valid?, Retry?, Slot available?, Decision? |
+| Script tasks (FEEL) | Prepare slot, Detect conflict, Set rejection reason, Set service error, Record decision, Mark as expired |
+| **REST connectors** | Fetch existing bookings, Hold slot, Confirm slot, Release slot ×2 |
+| **External worker** | `worker/worker.js`: Validate request, Send approval request, Send decision, Remind approver, Notify requester |
+| Business rule task (DMN) | Decide approver → `decide-approver.dmn` |
+| Timer boundary events | 1 min non-interrupting (reminder), 2 min interrupting (expiry) on *Review booking* |
+| Error boundary event | *Service down* on Fetch existing bookings |
+| Pools and message flows | Booking Desk ⇄ Hall Administration: approval request, decision |
+| Notification step | Notify requester (worker): email in `worker/outbox/`, recorded in `/notifications` |
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `hall-booking.bpmn` | Process `hall-booking` ("Seminar Hall and Lab Booking") |
+| `hall-booking.bpmn` | Collaboration: processes `hall-booking` (Booking Desk) and `hall-approval` (Hall Administration) |
 | `decide-approver.dmn` | Decision `decide-approver` (hit policy FIRST) |
-| `booking-request-form.form` | Start form |
-| `approval-form.form` | Approval task form |
-| `mock/db.seed.json` | Seed data. `mock/db.json` (live data) is created from it by `start-mock.cmd` and is not committed |
-| `scripts/start-mock.cmd` | Start the mock API on http://127.0.0.1:3000 |
-| `scripts/start-camunda.cmd` / `stop-camunda.cmd` | Start/stop Camunda 8 Run with the right `JAVA_HOME` and `MOCK_BASE_URL` |
-| `scripts/deploy.cmd` | Deploy all four files in one go |
-| `scripts/reset-mock.cmd` | Put the mock data back to the 3 seed bookings |
-| `scripts/run-scenarios.ps1` | Run scenarios A-F automatically through the REST API and print PASS/FAIL |
+| `booking-request-form.form`, `approval-form.form`, `service-fix-form.form` | The three forms |
+| `worker/worker.js` | External job worker (plain Node.js, no libraries) |
+| `mock/db.seed.json` | Seed data (3 bookings in January 2027). `mock/db.json` is created from it and not committed |
+| `scripts/start-mock.cmd`, `start-camunda.cmd`, `start-worker.cmd` | The three windows to keep open |
+| `scripts/deploy.cmd`, `reset-mock.cmd`, `stop-camunda.cmd` | Deploy everything; restore seed data; stop Camunda |
+| `scripts/run-scenarios.ps1` | 19 automated test cases with PASS/FAIL |
 
 ## Start everything (about 3 minutes)
 
-1. Double-click `scripts\start-mock.cmd`. Keep the window open.
-2. Double-click `scripts\start-camunda.cmd`. Wait until http://localhost:8080/operate shows the login page.
-   Log in with `demo` / `demo`. On the very first start, wait about 30 s more before logging in.
-3. Double-click `scripts\deploy.cmd`. The JSON it prints should list `hall-booking`, `decide-approver` and both forms.
+1. `scripts\start-mock.cmd`: mock API on http://127.0.0.1:3000. Keep the window open.
+2. `scripts\start-camunda.cmd`: wait for "All processes are running and healthy". Run it once more if it gives up.
+3. `scripts\start-worker.cmd`: the external worker. Keep the window open; it prints every job.
+4. http://localhost:8080/operate: log in with `demo` / `demo`.
+5. `scripts\deploy.cmd`: first time, or after changing a file.
+6. `scripts\reset-mock.cmd`: before a demo or a test run.
 
-To deploy from Desktop Modeler instead: deploy the DMN and both forms first, then the BPMN. Use target
-*Camunda 8 Self-Managed*, cluster endpoint `http://localhost:26500`, authentication *None*.
+## Demo outline (about 10 minutes)
 
-## Demo script
+1. **Model.** In Modeler, show the two pools and the dashed message flows. Then the Desk path, the worker tasks, the error
+   boundary, and the two timers. Open the DMN table.
+2. **Start the timer case first** (Tasklist → Processes → *Seminar Hall and Lab Booking*): Computer Lab 1,
+   13 Jan 2027, 10:00–12:00, 30 people. Don't touch its *Review booking* task.
+3. **Happy path:** Seminar Hall A, 12 Jan 2027, 14:00–16:00, 50 people. Point at the worker window (validation,
+   message published). Open *Review booking*, approve. The worker prints the email.
+4. **Worker validation:** Computer Lab 1 with 61 people → `OVER_CAPACITY` straight away.
+5. **Conflict:** Seminar Hall A, 11 Jan 2027, 11:00–13:00 → `CONFLICT`.
+6. **Service down:** close the mock API window, start a booking → *Resolve service issue* in Tasklist. Restart the
+   mock, choose Retry → the booking continues.
+7. **Operate:** each booking has two instances (Booking + Hall Approval). Show paths and variables. By now the timer
+   case has a reminder (worker window, `outbox`) and has expired.
+8. **Deployment:** change something small (e.g. the reminder to `PT30S`), deploy from Modeler, and show in Operate
+   that a new version of the process appeared while finished instances keep their old version.
 
-1. **Model.** Open `hall-booking.bpmn` in Desktop Modeler. Walk left to right: start form, FEEL scripts, REST
-   connector (show URL and result expression in the properties panel), gateway with default flow, business
-   rule task, user task with timer. Open `decide-approver.dmn` and explain the FIRST hit policy and rule order.
-2. **Start the timer case first** (scenario C), so its 2 minutes run while you show the rest. In Tasklist go
-   to **Processes**, start *Seminar Hall and Lab Booking*, and fill in lab-1, 2026-10-22, 10:00-12:00. Don't touch its task.
-3. **Happy path** (scenario A). Start another booking: hall-a, 2026-10-21, 14:00-16:00, 50 people. Open
-   **Tasks**, pick *Admin approval*, show "Approver role: admin-office", tick *Approve this booking*, and click
-   **Complete task**.
-4. **Conflict** (scenario B). hall-a, 2026-10-20, 11:00-13:00. No task appears; the process ends straight away.
-5. **Operate.** Open each instance and show the highlighted path and the variables (`slot`, `conflictCheck`,
-   `approver`, `bookingId`, `outcome`). By now C has taken the timer path.
-6. **Data.** Show http://127.0.0.1:3000/bookings (A is `CONFIRMED`, C's hold is gone) and
-   http://127.0.0.1:3000/notifications (one entry per finished run).
+## Test cases
 
-To avoid surprises, run `scripts\reset-mock.cmd` before the demo. A booking left over from a rehearsal
-would turn the same slot into a conflict.
+19 automated cases (A–R, all PASS on 2026-10-21) and 3 manual ones (service down + retry, service down + cancel,
+worker down; all PASS). The full table is in [`PROJECT-GUIDE.md` §8](../PROJECT-GUIDE.md#8-test-cases).
 
-To fill Operate with one finished instance per path in a single step:
-`powershell -ExecutionPolicy Bypass -File scripts\run-scenarios.ps1` (about 2.5 min; add `-SkipTimer` to skip C).
-
-## Test scenarios
-
-| # | Input | Expected | Verified |
-|---|---|---|---|
-| A | hall-a, 2026-10-21, 14:00-16:00, 50 people; tick approve | approver `admin-office`, outcome `APPROVED`, booking CONFIRMED | PASS: `admin-office`, `APPROVED`, booking 4 CONFIRMED |
-| B | hall-a, 2026-10-20, 11:00-13:00 (overlaps seed booking 10-12) | Set rejection reason, `CONFLICT`, no task | PASS: `CONFLICT`, no task |
-| C | lab-1, 2026-10-22, 10:00-12:00; do nothing for 2 min | approver `lab-incharge`; timer fires, hold deleted, `EXPIRED` | PASS: `lab-incharge`, timer fired after 2 min, booking deleted, `EXPIRED` |
-| D | hall-b, 15:00-13:00 (end before start) | `INVALID_TIME`, no task | PASS: `INVALID_TIME`, no task |
-| E | hall-b, 2026-10-23, 09:00-15:00 (6 h), 80 people; approve | DMN gives `dean`, `APPROVED` | PASS: `dean`, `APPROVED` |
-| F | hall-b, 2026-10-25, 10:00-12:00, 150 people; leave unticked, complete | DMN gives `hod`, `REJECTED`, hold deleted | PASS: `hod`, `REJECTED`, booking deleted |
-
-After a clean run of all six, the mock holds the 3 seed bookings plus A and E (both `CONFIRMED`), and 6 notifications.
+```
+scripts\reset-mock.cmd
+powershell -ExecutionPolicy Bypass -File scripts\run-scenarios.ps1
+```
 
 ## Screenshot checklist for the report
 
-- [ ] BPMN diagram in Modeler (whole process)
+- [ ] The collaboration diagram (both pools, message flows) in Modeler
 - [ ] DMN decision table
-- [ ] Tasklist: start form filled in, approval form showing the approver role
-- [ ] Operate: path of A (approved), B (conflict) and C (timer -> release expired)
-- [ ] Operate: variables panel of one instance (`slot`, `conflictCheck`, `approver`, `outcome`)
-- [ ] `http://127.0.0.1:3000/bookings` after C (no PENDING booking left) and `/notifications`
-
-## Troubleshooting
-
-| Symptom | Cause / fix |
-|---|---|
-| Incident on *Fetch existing bookings* | Mock not running, or Camunda was not started with `start-camunda.cmd` (secret `MOCK_BASE_URL` missing). Start the mock, then retry the incident in Operate. |
-| c8run says "Failed to get Java version" | `JAVA_HOME` points at a drive root. Use `start-camunda.cmd` (it sets `E:\jdk-21.0.6`). |
-| Login says the password doesn't match on first start | The `demo` user is still being created. Wait 30 s and try again. |
-| Scenario A or E ends as `CONFLICT` | Leftover booking from an earlier run. Run `scripts\reset-mock.cmd`. |
-| Approval task disappeared | The 2-minute timer released it. Expected behaviour; see scenario C. |
+- [ ] Tasklist: start form; *Review booking* form; *Resolve service issue* form
+- [ ] Worker window with a few jobs, and an email file from `worker/outbox`
+- [ ] Operate: an approved booking and its Hall Approval instance; a conflict; an expired one (timer path, reminder)
+- [ ] Operate: the *Resolve service issue* → Retry path
+- [ ] Operate: process versions after a redeploy
+- [ ] `run-scenarios.ps1` output: 19 of 19 passed

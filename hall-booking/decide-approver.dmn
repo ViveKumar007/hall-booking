@@ -78,20 +78,6 @@
           <text>"admin-office"</text>
         </outputEntry>
       </rule>
-      <rule id="DecisionRule_0nif282">
-        <inputEntry id="UnaryTests_1yih3sp">
-          <text></text>
-        </inputEntry>
-        <inputEntry id="UnaryTests_06ioig8">
-          <text></text>
-        </inputEntry>
-        <inputEntry id="UnaryTests_1eov9r0">
-          <text></text>
-        </inputEntry>
-        <outputEntry id="LiteralExpression_0hl7syg">
-          <text></text>
-        </outputEntry>
-      </rule>
     </decisionTable>
   </decision>
   <dmndi:DMNDI>
