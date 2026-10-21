@@ -37,7 +37,7 @@
     </bpmn:serviceTask>
     <bpmn:scriptTask id="Script_DetectConflict" name="Detect conflict">
       <bpmn:extensionElements>
-        <zeebe:script expression="={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour &lt; slot.endHour and item.endHour &gt; slot.startHour]) &gt; 0 }" resultVariable="conflictCheck" />
+        <zeebe:script expression="={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour &#60; slot.endHour and item.endHour &#62; slot.startHour]) &#62; 0 }" resultVariable="conflictCheck" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToDetect</bpmn:incoming>
       <bpmn:outgoing>Flow_ToSlotOk</bpmn:outgoing>
@@ -49,7 +49,7 @@
     </bpmn:exclusiveGateway>
     <bpmn:scriptTask id="Script_SetReason" name="Set rejection reason">
       <bpmn:extensionElements>
-        <zeebe:script expression="=if slot.durationHours &lt;= 0 then &#34;INVALID_TIME&#34; else &#34;CONFLICT&#34;" resultVariable="outcome" />
+        <zeebe:script expression="=if slot.durationHours &#60;= 0 then &#34;INVALID_TIME&#34; else &#34;CONFLICT&#34;" resultVariable="outcome" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_SlotTaken</bpmn:incoming>
       <bpmn:outgoing>Flow_ReasonToMerge</bpmn:outgoing>
@@ -92,7 +92,7 @@
       <bpmn:incoming>Flow_ToApproval</bpmn:incoming>
       <bpmn:outgoing>Flow_ToApproved</bpmn:outgoing>
     </bpmn:userTask>
-    <bpmn:boundaryEvent id="Timer_Timeout" name="Not approved in time" cancelActivity="true" attachedToRef="User_Approval">
+    <bpmn:boundaryEvent id="Timer_Timeout" name="Not approved in time" attachedToRef="User_Approval">
       <bpmn:outgoing>Flow_Expired</bpmn:outgoing>
       <bpmn:timerEventDefinition id="TimerEventDefinition_Timeout">
         <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT2M</bpmn:timeDuration>

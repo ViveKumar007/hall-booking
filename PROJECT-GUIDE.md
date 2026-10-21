@@ -6,7 +6,7 @@ This guide explains how the whole project works and how to build it yourself. It
 - **Part B, Running it:** starting everything, using Tasklist and Operate, and the test scenarios.
 - **Part C, Building it yourself:** recreating every file in Desktop Modeler, click by click.
 
-Quick links: [Part A](#part-a--how-it-works) · [Part B](#part-b--running-it) · [Part C](#part-c--building-it-yourself) · [Troubleshooting](#10-troubleshooting) · [Questions you may be asked](#11-questions-you-may-be-asked)
+Quick links: [Part A](#part-a--how-it-works) · [Part B](#part-b--running-it) · [Run guide](#6-run-guide) · [Part C](#part-c--building-it-yourself) · [Troubleshooting](#10-troubleshooting) · [Questions you may be asked](#11-questions-you-may-be-asked)
 
 ---
 
@@ -246,7 +246,7 @@ WFA - Project/
    ├─ approval-form.form         approval task form (id: approval-form)
    ├─ README.md                  short setup + demo script + screenshot checklist
    ├─ mock/
-   │  ├─ db.json                 live mock data (changes as the process runs)
+   │  ├─ db.json                 live mock data (created from the seed by start-mock.cmd; not in git)
    │  ├─ db.seed.json            clean copy: 3 seed bookings, no notifications
    │  └─ README.md               how the mock API works
    └─ scripts/
@@ -258,23 +258,73 @@ WFA - Project/
       └─ run-scenarios.ps1       run test scenarios A-F automatically, print PASS/FAIL
 ```
 
-## 6. Starting everything
+## 6. Run guide
 
-Do these in order. Each `.cmd` can be double-clicked in Explorer.
+All scripts are in `hall-booking\scripts\`. Each `.cmd` can be double-clicked in Explorer.
 
-| Step | Do this | What it does | Ready when |
-|---|---|---|---|
-| 1 | `hall-booking\scripts\start-mock.cmd` | `npx json-server@0.17.4 --watch mock/db.json --host 127.0.0.1 --port 3000` | http://127.0.0.1:3000/bookings shows the bookings |
-| 2 | `hall-booking\scripts\start-camunda.cmd` | Sets `JAVA_HOME=E:\jdk-21.0.6` and `MOCK_BASE_URL=http://127.0.0.1:3000`, then runs `c8run.exe start` | http://localhost:8080/operate shows the login page (1-3 min) |
-| 3 | Log in with `demo` / `demo` | – | You see the Operate dashboard |
-| 4 | `hall-booking\scripts\deploy.cmd` | `POST /v2/deployments` with the DMN, both forms and the BPMN | The printed JSON lists `hall-booking`, `decide-approver` and both forms |
-| 5 | (before a demo) `hall-booking\scripts\reset-mock.cmd` | Restores the 3 seed bookings | – |
+### 6.1 First time on a new computer (one-time setup)
 
-**Keep the mock and Camunda windows open.** Closing them stops the services. To stop Camunda cleanly, run `stop-camunda.cmd`.
+Skip this on Vivek's laptop: everything is already installed. On any other computer, for example after cloning from GitHub:
 
-> **Order matters:** start Camunda with `start-camunda.cmd`, not by running `c8run.exe` directly.
-> Otherwise `MOCK_BASE_URL` is missing and every REST task fails. Also, `JAVA_HOME` on this machine must be
-> `E:\jdk-21.0.6`, not `D:\` (see section 9).
+1. Install **JDK 21** (OpenJDK 21, 22 or 23) into **its own folder**, e.g. `C:\Java\jdk-21`. Never unpack it onto a drive root such as `D:\`: c8run searches the whole `JAVA_HOME` folder for something called `java`.
+2. Install **Node.js** (LTS). It provides `npx`, which runs the mock API.
+3. Download **Camunda 8 Run 8.8** from https://downloads.camunda.cloud/release/camunda/c8run/8.8/ and unzip it.
+4. Download **Camunda Desktop Modeler** from https://camunda.com/download/modeler/ and unzip it.
+5. Get the project: `git clone https://github.com/ViveKumar007/hall-booking.git`
+6. Open `start-camunda.cmd` and `stop-camunda.cmd` in a text editor. Change the two paths at the top to your c8run folder and JDK folder:
+   ```
+   set "C8RUN=E:\camunda8-run-8.8-windows-x86_64\c8run-8.8.32"
+   set "JAVA_HOME=E:\jdk-21.0.6"
+   ```
+7. Continue with 6.2. The first start also downloads json-server (a few seconds) and creates the `demo` user.
+
+### 6.2 Every time: start the project (about 3 minutes)
+
+| Step | Do this | You should see |
+|---|---|---|
+| 1 | Double-click `start-mock.cmd` | A window with the json-server banner and `Resources http://127.0.0.1:3000/bookings`. **Keep it open.** |
+| 2 | Double-click `start-camunda.cmd` | A window that prints `JAVA_HOME: E:\jdk-21.0.6`, then `Started successfully name=Elasticsearch`, then Connectors and Camunda. **Keep it open.** |
+| 3 | Open http://localhost:8080/operate and wait | The login page, after 1-3 minutes. Until then the browser shows `ERR_CONNECTION_REFUSED`; that is normal, refresh after a minute. |
+| 4 | Log in with `demo` / `demo` | The Operate dashboard. On the very first start, wait 30 s more if the login is refused. |
+| 5 | Double-click `deploy.cmd` (only the first time, or after you changed a file) | JSON listing `hall-booking`, `decide-approver`, `approval-form` and `booking-request-form`. Press a key to close. |
+| 6 | Double-click `reset-mock.cmd` (before a demo) | `Mock data reset to seed.` |
+| 7 | Open **Camunda Modeler** by double-clicking `E:\camunda-modeler-5.49.0-win-x64\Camunda Modeler.exe`, then **File → Open** both `hall-booking.bpmn` and `decide-approver.dmn` | The process diagram, and the DMN as a box. Click the **table icon** in the top-left corner of the box to see the rules. |
+
+> **Use the scripts, not `c8run.exe` directly.** `start-camunda.cmd` also sets `MOCK_BASE_URL`, which the
+> REST tasks need, and the correct `JAVA_HOME`. Without it, every booking stops at *Fetch existing bookings*.
+
+Deployments and finished instances are **kept** when Camunda stops, so after a restart you don't need to deploy again unless a file changed.
+
+### 6.3 Check it works (1 minute)
+
+1. Tasklist → **Processes** → **Start process** → book Seminar Hall A, 20 Oct 2026, 11:00-13:00 (this clashes with a seed booking).
+2. Operate → **Processes** → tick **Finished instances** in the filter panel → the new instance shows outcome `CONFLICT` and a path through *Set rejection reason*.
+3. Run `reset-mock.cmd` to remove the notification it created.
+
+Or check everything at once (about 1 minute, skips the timer case), then reset:
+```
+powershell -ExecutionPolicy Bypass -File "hall-booking\scripts\run-scenarios.ps1" -SkipTimer
+hall-booking\scripts\reset-mock.cmd
+```
+
+### 6.4 After you change a file
+
+1. Save it in Camunda Modeler.
+2. Run `deploy.cmd` (or use the rocket icon in Modeler). Camunda creates a **new version** of each changed file.
+3. Start a **new** booking to see the change. Instances that were already running keep the version they started with.
+
+Saving in Modeler can reformat parts of the XML, for example `&lt;` becomes `&#60;` and `cancelActivity="true"` disappears because it is the default. That is harmless; the process behaves the same.
+
+### 6.5 Stop and restart
+
+| Situation | Do this |
+|---|---|
+| Finished for the day | Double-click `stop-camunda.cmd`. In the mock window press **Ctrl+C**, then close it. |
+| Restart everything | Stop as above, then steps 1-4 of 6.2. Deploy only if a file changed. |
+| After the PC restarted | Nothing is running. Do steps 1-4 of 6.2. |
+| Camunda won't start after the PC was shut down while it was running | Delete `camunda.process`, `connectors.process` and `elasticsearch.process` in the c8run folder (leftover process IDs), then run `start-camunda.cmd` again. |
+
+### 6.6 Addresses
 
 | Address | What |
 |---|---|
@@ -297,7 +347,7 @@ Do these in order. Each `.cmd` can be double-clicked in Explorer.
 
 ### 7.2 Watch it in Operate
 
-1. Open http://localhost:8080/operate → **Processes** → *Seminar Hall and Lab Booking*.
+1. Open http://localhost:8080/operate → **Processes** → *Seminar Hall and Lab Booking*. Finished instances are hidden by default: tick **Finished instances** in the filter panel on the left.
 2. Click an instance key. The diagram highlights the path taken, with a check mark on completed elements.
 3. The **Variables** panel shows `slot`, `existing`, `conflictCheck`, `approver`, `bookingId`, `outcome`, … Click an element in the diagram to see what was set at that step.
 4. A red badge marks an **incident**. Click it to read the error, fix the cause (e.g. start the mock API), then click **Retry**.
@@ -485,6 +535,10 @@ Build them in this order: **forms → DMN → BPMN**. The BPMN refers to the oth
 | No approval task in Tasklist | Slot was a conflict or invalid, or the timer already fired | Check the instance in Operate |
 | Deploy error mentioning a form or decision | IDs don't match, or files deployed in the wrong order | Use `deploy.cmd` (all at once) |
 | Approval task disappeared | The 2-minute timer fired (expected) | Start a new booking and approve it sooner |
+| Operate shows no instances | Finished instances are hidden by default | Tick **Finished instances** in the filter panel |
+| The DMN shows only a box, no table | That is the overview (DRD) view | In Camunda Modeler, click the **table icon** in the top-left corner of the box. In VS Code's "DMN/SceSim Editors" (a different editor), click the box and then the pencil icon. Don't save the DMN from VS Code's editor: it can rewrite the file in its own format. |
+| Camunda Modeler closes immediately when started from VS Code's terminal | VS Code sets `ELECTRON_RUN_AS_NODE=1`, which makes the Modeler quit | Double-click the Modeler `.exe` in Explorer instead |
+| Camunda won't start after the PC was shut down with it running | Leftover process-ID files in the c8run folder | Delete the three `*.process` files in the c8run folder, then `start-camunda.cmd` |
 
 ## 11. Questions you may be asked
 
