@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hall Booking</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='26' height='26' rx='5' fill='%234535B0'/%3E%3Cpath d='M10 9v14M10 16h8M18 9v14' stroke='white' stroke-width='3' fill='none'/%3E%3Ccircle cx='23.5' cy='12' r='2' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="#/" aria-label="Hall Booking, room board">
+      <span class="brand-mark" aria-hidden="true">HB</span>
+      <span class="brand-text"><b>Hall Booking</b><small>Seminar halls &amp; labs</small></span>
+    </a>
+    <nav id="nav" class="nav" aria-label="Main"></nav>
+    <div class="bar-right">
+      <div id="status" class="status" aria-live="polite"></div>
+      <label class="role" for="role"><span>Viewing as</span>
+        <select id="role"></select>
+      </label>
+    </div>
+  </header>
+  <main id="view" class="view" tabindex="-1"></main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

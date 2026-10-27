@@ -47,16 +47,13 @@ function Start-Booking($s) {
 }
 
 # The approval task lives in the Hall Administration pool (its own process instance).
-# Match it to the booking through the shared bookingRef, e.g. "BK-7".
+# Match it to the booking through the shared requestId (the booking's process instance key).
 function Find-ApprovalTask([string]$Pik, [int]$TimeoutSec = 60) {
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
-  $ref = $null
+  $want = '"' + $Pik + '"'
   while ((Get-Date) -lt $deadline) {
-    if (-not $ref) { $ref = Get-RawVariable $Pik 'bookingRef' }
-    if ($ref) {
-      $tasks = (Invoke-Api POST '/v2/user-tasks/search' @{ filter = @{ elementId = 'User_Approval'; state = 'CREATED' } }).items
-      foreach ($t in $tasks) { if ((Get-RawVariable $t.processInstanceKey 'bookingRef') -eq $ref) { return $t } }
-    }
+    $tasks = (Invoke-Api POST '/v2/user-tasks/search' @{ filter = @{ elementId = 'User_Approval'; state = 'CREATED' } }).items
+    foreach ($t in $tasks) { if ((Get-RawVariable $t.processInstanceKey 'requestId') -eq $want) { return $t } }
     Start-Sleep -Seconds 1
   }
   throw "No approval task appeared for booking instance $Pik"

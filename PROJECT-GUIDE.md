@@ -6,7 +6,7 @@ This guide explains how the whole project works and how to build it yourself. It
 - **Part B, Running it:** the run guide, using Tasklist and Operate, and the test cases.
 - **Part C, Building it yourself:** recreating every file in Desktop Modeler, click by click.
 
-Quick links: [Part A](#part-a--how-it-works) · [Run guide](#6-run-guide) · [Test cases](#8-test-cases) · [Part C](#part-c--building-it-yourself) · [Troubleshooting](#11-troubleshooting) · [Questions you may be asked](#12-questions-you-may-be-asked)
+Quick links: [Part A](#part-a--how-it-works) · [Run guide](#6-run-guide) · [Web app](#71-in-the-web-app) · [Test cases](#8-test-cases) · [Part C](#part-c--building-it-yourself) · [Troubleshooting](#11-troubleshooting) · [Questions you may be asked](#12-questions-you-may-be-asked)
 
 > This is **version 2** (review 2): two pools, an external worker, validation, error handling and reminders.
 > Version 1 (review 1) is saved in git as tag `review-1`.
@@ -78,6 +78,7 @@ No Java. The process logic is BPMN, DMN, FEEL, forms and REST connectors. The on
 | **Operate** | Web app for monitoring | Every instance of both processes, its path, variables and errors |
 | **Connectors runtime** | Camunda's ready-made workers | The five REST calls to the booking database |
 | **External worker** | **Our own** worker program (`worker/worker.js`) | Validation, publishing messages, reminders, notifications |
+| **Web app** | **Our own** UI (`app/server.js` + `app/public/`), plain HTML/CSS/JS | Requesters, approvers and admins use it instead of Tasklist: room board, booking form, live route of each request, approver inbox, service issues |
 | **json-server** | Fake REST API from a JSON file | The college's booking database |
 
 ### 2.3 Concepts you need
@@ -89,7 +90,7 @@ No Java. The process logic is BPMN, DMN, FEEL, forms and REST connectors. The on
 | **Message flow** | Dashed arrow between pools: a message one sends and the other receives |
 | **Send task / receive task** | A send task sends a message (here, our worker publishes it). A receive task waits until a matching message arrives |
 | **Message start event** | Starts a new process instance when a message with its name arrives |
-| **Correlation key** | Which waiting instance a message is for. Here `bookingRef`, e.g. `BK-12` |
+| **Correlation key** | Which waiting instance a message is for. Here `requestId`: the booking's own process instance number, which never repeats |
 | **DMN** | Decision table: inputs, rules and outputs |
 | **FEEL** | Camunda's expression language. Expressions start with `=` |
 | **Process definition / instance** | The deployed model (versioned) and one run of it |
@@ -140,12 +141,12 @@ Values from the test run on 21 Oct 2026. Operate shows the same values in the *V
 | 6 | Desk | **Detect conflict** (FEEL) | No overlap on hall-a, 12 Jan | `conflictCheck = {hasConflict:false}` |
 | 7 | Desk | **Decide approver** (DMN) | 2 h, 50 people → rule 4 | `approver = "admin-office"` |
 | 8 | Desk | **Hold slot** (REST) | `POST /bookings` with status PENDING | `bookingId = 4`, `bookingRef = "BK-4"` |
-| 9 | Desk | **Send approval request** (worker) | Publishes message `booking-approval-request`, key `BK-4` | – |
-| 10 | Admin | **Approval request received** | A new *Hall Approval* instance starts with the request data | `bookingRef="BK-4"`, `approver`, requester fields |
+| 9 | Desk | **Send approval request** (worker) | Publishes message `booking-approval-request`, key = `requestId` | – |
+| 10 | Admin | **Approval request received** | A new *Hall Approval* instance starts with the request data | `requestId`, `bookingRef="BK-4"`, `approver`, requester fields |
 | 11 | Admin | **Review booking** | Task in Tasklist; the approver ticks *Approve* | `approved = true`, `remarks = "ok"` |
 | 12 | Admin | **Record decision** (FEEL) | Packs the decision | `decision = {outcome:"APPROVED", remarks:"ok"}` |
-| 13 | Admin | **Send decision** (worker) | Publishes `booking-approval-decision`, key `BK-4` | – |
-| 14 | Desk | **Wait for decision** | Receives the message for `BK-4` | `decision = {outcome:"APPROVED", …}` |
+| 13 | Admin | **Send decision** (worker) | Publishes `booking-approval-decision`, key = `requestId` | – |
+| 14 | Desk | **Wait for decision** | Receives the message with its own `requestId` | `decision = {outcome:"APPROVED", …}` |
 | 15 | Desk | **Decision?** → **Confirm slot** (REST) | `PATCH /bookings/4` to CONFIRMED | `outcome = "APPROVED"` |
 | 16 | Desk | **Notify requester** (worker) | Saves the email in `outbox/`, records it in `/notifications` | `notificationId = 1` |
 
@@ -184,7 +185,7 @@ The worker reads the variables and checks, in this order:
 | `bookingDate >= today` (the computer's date) | `PAST_DATE` |
 | `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60) | `OVER_CAPACITY` |
 
-It completes the job with `validation = {valid, reason, capacity, checkedOn}`, and also sets `outcome` when invalid.
+It completes the job with `validation = {valid, reason, capacity, checkedOn}` and `requestId` (the process instance key, used to route the messages), and also sets `outcome` when invalid.
 The gateway **Request valid?** sends `=validation.valid = false` to the merge; the default flow continues.
 
 Why a worker instead of FEEL? "Today" and the capacity list belong to systems outside the process: a clock and a
@@ -247,13 +248,16 @@ whose form shows `serviceError` and asks **Retry** or **Cancel**. Without this, 
 
 | Message | Sent by | Received by | Correlation key | Payload |
 |---|---|---|---|---|
-| `booking-approval-request` | *Send approval request* (Desk) | *Approval request received* (Admin, **start event**) | `bookingRef` | requester fields, `approver`, `bookingId`, `bookingRef` |
-| `booking-approval-decision` | *Send decision* (Admin) | *Wait for decision* (Desk, **receive task**) | `bookingRef` | `decision = {outcome, remarks}` |
+| `booking-approval-request` | *Send approval request* (Desk) | *Approval request received* (Admin, **start event**) | `requestId` | requester fields, `approver`, `bookingId`, `bookingRef`, `requestId` |
+| `booking-approval-decision` | *Send decision* (Admin) | *Wait for decision* (Desk, **receive task**) | `requestId` | `decision = {outcome, remarks}` |
 
 - The dashed **message flows** in the diagram document who talks to whom; Zeebe does not execute them. The **send tasks**
   create jobs of type `publish-message`; our worker publishes the message through Camunda's REST API.
 - The message **name** says which kind of event it is; the **correlation key** says which instance it's for. Several
   bookings can wait at the same time; each gets only its own decision.
+- Why `requestId` and not `bookingRef` (`BK-4`)? The booking database restarts its numbering after a reset, so an old and
+  a new booking could both be `BK-4`, and Camunda won't start a second approval while one with the same key is still
+  open. `requestId` is the booking's process instance key, set by the worker during validation; it never repeats.
 - Messages are kept for 1 hour (time-to-live), so nothing is lost even if a message arrives before the receiver is waiting.
 
 ### 4.8 The two timers
@@ -307,6 +311,9 @@ WFA - Project/
    ├─ approval-form.form         Review booking form
    ├─ service-fix-form.form      Resolve service issue form
    ├─ README.md                  short setup + demo + screenshot checklist
+   ├─ app/
+   │  ├─ server.js               the web app's server: serves the pages and /api (Node, no libraries)
+   │  └─ public/                 the pages: index.html, css/app.css, js/ (one file per page)
    ├─ worker/
    │  ├─ worker.js               the external job worker
    │  └─ outbox/                 emails and reminders it "sends" (not in git)
@@ -315,9 +322,11 @@ WFA - Project/
    │  ├─ db.json                 live data (created from the seed; not in git)
    │  └─ README.md               how the mock API works
    └─ scripts/
+      ├─ start-all.cmd           opens all four windows and the browser
       ├─ start-mock.cmd          mock API on 127.0.0.1:3000
       ├─ start-camunda.cmd       Camunda 8 Run with JAVA_HOME + MOCK_BASE_URL
       ├─ start-worker.cmd        the external worker
+      ├─ start-app.cmd           the web app on http://localhost:8090
       ├─ stop-camunda.cmd        stop Camunda 8 Run
       ├─ deploy.cmd              deploy DMN + 3 forms + BPMN
       ├─ reset-mock.cmd          restore the seed data
@@ -340,12 +349,15 @@ Skip this on Vivek's laptop: everything is installed.
 
 ### 6.2 Every time: start the project (about 3 minutes)
 
+**Quickest:** double-click `start-all.cmd`. It opens the four windows below and the app in the browser. The status lights
+at the top of the app turn green as each part becomes ready (Camunda takes 1–3 minutes). Then do steps 5–7.
+
 | Step | Do this | You should see |
 |---|---|---|
 | 1 | Double-click `start-mock.cmd` | json-server banner, `Resources http://127.0.0.1:3000/bookings`. **Keep open.** |
 | 2 | Double-click `start-camunda.cmd` | `JAVA_HOME: E:\jdk-21.0.6`, then Elasticsearch, Connectors and Camunda start. Ends with "All processes are running and healthy". If it gives up, run it once more. |
 | 3 | Double-click `start-worker.cmd` | `worker started: validate-booking, publish-message, send-reminder, send-notification`. **Keep open.** Every job it handles is printed here. |
-| 4 | Open http://localhost:8080/operate | Login page after 1–3 min (`ERR_CONNECTION_REFUSED` until then). Log in with `demo` / `demo`. |
+| 4 | Double-click `start-app.cmd`, open **http://localhost:8090** | `Hall Booking app on http://localhost:8090`. **Keep open.** The three lights (Camunda, Bookings, Worker) turn green. For Operate, open http://localhost:8080/operate and log in with `demo` / `demo`. |
 | 5 | Double-click `deploy.cmd` (first time, or after a change) | JSON listing `hall-booking`, `hall-approval`, `decide-approver` and three forms |
 | 6 | Double-click `reset-mock.cmd` (before a demo or test run) | `Mock data reset to seed.` |
 | 7 | Open **Camunda Modeler** by double-clicking `E:\camunda-modeler-5.49.0-win-x64\Camunda Modeler.exe` → open the `.bpmn` and `.dmn` | The two pools; the DMN as a box (click its **table icon** for the rules) |
@@ -386,7 +398,24 @@ Save in Modeler → `deploy.cmd` (or the rocket icon) → Camunda creates a new 
 
 ## 7. Seeing it work
 
-### 7.1 In Tasklist
+### 7.1 In the web app
+
+Open http://localhost:8090. **Viewing as** (top right) switches between Requester, the four approver roles and Admin; there is no login.
+
+| Page | Who | What you can do |
+|---|---|---|
+| **Room board** | everyone | Each venue's day from 08:00 to 18:00: confirmed bookings and held slots waiting for approval |
+| **New booking** | requester | Fill the form; the side panel shows that day's bookings with your request drawn in, and warns about clashes, past dates and capacity before you send |
+| **Request page** | everyone | The **route**: every step in two lanes (Booking Desk, Hall Administration), messages crossing between them, updating live, ending in the outcome stamp. Shows the approval countdown and the email sent |
+| **My requests / All requests** | requester / admin | Every request with its status |
+| **Inbox** | approvers, admin | Requests waiting for that role, with a 2-minute countdown and a *Reminder sent* badge. Approve or reject with remarks |
+| **Service issues** | admin | Requests stuck because the booking service was down: **Retry now** or **Cancel booking** |
+| **Calendar**, **Notifications** | everyone / admin | The week per venue; every email the worker sent |
+
+The app's server calls Camunda's REST API (`/v2`), the booking service and the worker's health address (`:8091/health`).
+The workflow itself is unchanged; Tasklist and Operate still work alongside.
+
+### 7.2 In Tasklist
 
 1. **Processes** → **Seminar Hall and Lab Booking** → **Start process**, fill in the form. (Don't start *Hall Approval* directly: it is started by the message.)
 2. **Tasks** → **Review booking** appears within a few seconds (process *Hall Approval*). It shows the booking ref and approver role.
@@ -394,7 +423,7 @@ Save in Modeler → `deploy.cmd` (or the rocket icon) → Camunda creates a new 
 4. Leave a review open: after 1 min the worker window prints a reminder; after 2 min the task disappears (expired).
 5. If the booking service is down, the task is **Resolve service issue** instead: choose Retry or Cancel.
 
-### 7.2 In Operate
+### 7.3 In Operate
 
 1. **Processes** → tick **Finished instances** in the filter panel (finished runs are hidden by default).
 2. Each booking has **two instances**: one *Seminar Hall and Lab Booking*, one *Hall Approval*. Match them by `bookingRef`.
@@ -402,7 +431,7 @@ Save in Modeler → `deploy.cmd` (or the rocket icon) → Camunda creates a new 
 4. **Decisions** (top bar) → *Decide approver*: the inputs and the rule that matched.
 5. A red badge is an **incident**: read the error, fix the cause, click **Retry**.
 
-### 7.3 Outside Camunda
+### 7.4 Outside Camunda
 
 - **Worker window:** one line per job, e.g. `validate-booking  Scenario A | hall-a 2027-01-12 14:00-16:00, 50 people -> VALID`.
 - **`worker\outbox\`:** one `.txt` email per finished booking, plus reminders.
@@ -501,8 +530,8 @@ palette and set each one's **Key**.
 | `Script_SetReason` "Set rejection reason" | Script task | `="CONFLICT"`, result `outcome` |
 | `Dmn_DecideApprover` "Decide approver" | Business rule task | *DMN decision*, ID `decide-approver`, result `approver` |
 | `Rest_HoldSlot` "Hold slot" | REST Outbound Connector | POST, body `={hall: venue, day: bookingDate, startHour: slot.startHour, endHour: slot.endHour, status: "PENDING", requester: requesterName}`, result expression from 4.6 |
-| `Send_ApprovalRequest` "Send approval request" | **Send task** | *Job worker*, type `publish-message`; **Task headers**: `messageName` = `booking-approval-request`; **Inputs**: `correlationKey` = `=bookingRef`, `messageVariables` = `={requesterName: requesterName, email: email, venue: venue, bookingDate: bookingDate, startTime: startTime, endTime: endTime, attendees: attendees, purpose: purpose, approver: approver, bookingId: bookingId, bookingRef: bookingRef}` |
-| `Receive_Decision` "Wait for decision" | **Receive task** | Message: new, name `booking-approval-decision`, **correlation key** `=bookingRef` |
+| `Send_ApprovalRequest` "Send approval request" | **Send task** | *Job worker*, type `publish-message`; **Task headers**: `messageName` = `booking-approval-request`; **Inputs**: `correlationKey` = `=requestId`, `messageVariables` = `={requesterName: requesterName, email: email, venue: venue, bookingDate: bookingDate, startTime: startTime, endTime: endTime, attendees: attendees, purpose: purpose, approver: approver, bookingId: bookingId, bookingRef: bookingRef, requestId: requestId}` |
+| `Receive_Decision` "Wait for decision" | **Receive task** | Message: new, name `booking-approval-decision`, **correlation key** `=requestId` |
 | `Gateway_Decision` "Decision?" | Exclusive gateway | three outgoing flows |
 | `Rest_ConfirmSlot`, `Rest_ReleaseRejected`, `Rest_ReleaseExpired` | REST Outbound Connector | PATCH / DELETE / DELETE, URL `="{{secrets.MOCK_BASE_URL}}/bookings/" + string(bookingId)`, result expressions from 4.6 |
 | `Gateway_Merge` | Exclusive gateway | merge of the six endings |
@@ -522,7 +551,7 @@ palette and set each one's **Key**.
 | `Script_RecordDecision` "Record decision" | Script task | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks}`, result `decision` |
 | `Script_MarkExpired` "Mark as expired" | Script task | `={outcome: "EXPIRED", remarks: "Not reviewed within 2 minutes"}`, result `decision` |
 | `Gateway_DecisionMerge` | Exclusive gateway | merge |
-| `Send_Decision` "Send decision" | Send task | type `publish-message`; header `messageName` = `booking-approval-decision`; inputs `correlationKey` = `=bookingRef`, `messageVariables` = `={decision: decision}` |
+| `Send_Decision` "Send decision" | Send task | type `publish-message`; header `messageName` = `booking-approval-decision`; inputs `correlationKey` = `=requestId`, `messageVariables` = `={decision: decision}` |
 | `End_Decided` "Decision sent" | End event | |
 
 6. **Conditions and default flows** (select a flow → *Condition*; for a default flow: select it → wrench → **Default flow**): see the table in [4.4](#44-gateways).
@@ -608,12 +637,13 @@ retry fewer; after three failures Camunda raises an incident.
 **Why two pools? How do they communicate?**
 The booking desk and the hall administration are separate participants with their own processes, which could even run
 on different systems. They communicate only by messages: the send task publishes `booking-approval-request` with
-correlation key `bookingRef`; the message start event in the admin pool starts a new instance. The decision comes back
+correlation key `requestId`; the message start event in the admin pool starts a new instance. The decision comes back
 the same way to the receive task. The dashed message flows document this.
 
-**What is a correlation key, and why `bookingRef`?**
-It says which waiting instance a message is for. Many bookings can wait for decisions at once, and `bookingRef`
-(`BK-` + the booking ID) is unique per booking, so each gets only its own decision.
+**What is a correlation key, and why `requestId`?**
+It says which waiting instance a message is for. Many bookings can wait for decisions at once, so the key must be
+unique per booking. We first used `bookingRef` (`BK-` + the database ID), but the database restarts its numbering after
+a reset, so two bookings could share `BK-4`. `requestId` is the booking's process instance key, which never repeats.
 
 **Interrupting vs non-interrupting timer?**
 After 1 minute, the non-interrupting timer sends a reminder and leaves the task open. After 2 minutes, the interrupting

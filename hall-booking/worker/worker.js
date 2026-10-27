@@ -7,12 +7,17 @@
 // No libraries needed: Node 18+ has fetch built in. Start it with scripts\start-worker.cmd.
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 
 const CAMUNDA = process.env.CAMUNDA_URL || 'http://localhost:8080';
 const MOCK = process.env.MOCK_BASE_URL || 'http://127.0.0.1:3000';
 const WORKER_NAME = 'hall-booking-worker';
 const OUTBOX = path.join(__dirname, 'outbox');
+const HEALTH_PORT = Number(process.env.WORKER_PORT || 8091);
+
+// Counters for GET http://127.0.0.1:8091/health (the web app shows whether the worker is running).
+const stats = { status: 'UP', startedAt: new Date().toISOString(), lastJobAt: null, handled: {} };
 
 // Maximum people per venue. Requests above this end with outcome OVER_CAPACITY.
 const CAPACITY = { 'hall-a': 200, 'hall-b': 150, 'lab-1': 60 };
@@ -27,7 +32,7 @@ const handlers = {
 // ---------------------------------------------------------------- job handlers
 
 // Checks what FEEL can't easily check: times make sense, the date is not in the past, the venue is big enough.
-async function validateBooking(v) {
+async function validateBooking(v, job) {
   const today = new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
   const capacity = CAPACITY[v.venue] ?? null;
   let reason = null;
@@ -36,8 +41,11 @@ async function validateBooking(v) {
   else if (capacity !== null && v.attendees > capacity) reason = 'OVER_CAPACITY';
 
   const validation = { valid: reason === null, reason, capacity, checkedOn: today };
+  // Unique id for this request, used as the correlation key of both messages between the pools.
+  // bookingRef ("BK-" + database id) can repeat after the booking database is reset; this can't.
+  const requestId = String(job.processInstanceKey);
   log('validate-booking', `${v.requesterName} | ${v.venue} ${v.bookingDate} ${v.startTime}-${v.endTime}, ${v.attendees} people -> ${reason || 'VALID'}`);
-  return reason ? { validation, outcome: reason } : { validation };
+  return reason ? { validation, requestId, outcome: reason } : { validation, requestId };
 }
 
 // Used by both send tasks. The message name comes from the task header, the correlation key and
@@ -120,6 +128,8 @@ async function work(type, handler) {
       try {
         const variables = await handler(job.variables || {}, job);
         await api('POST', `/v2/jobs/${job.jobKey}/completion`, { variables });
+        stats.handled[type] = (stats.handled[type] || 0) + 1;
+        stats.lastJobAt = new Date().toISOString();
       } catch (e) {
         const retries = Math.max((job.retries || 1) - 1, 0);
         log(type, `FAILED job ${job.jobKey}: ${e.message} (retries left: ${retries})`);
@@ -144,6 +154,17 @@ function log(type, msg) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(stats));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+}).on('error', (e) => log('worker', `health endpoint not started: ${e.message}`))
+  .listen(HEALTH_PORT, '127.0.0.1');
+
 log('worker', `started: ${Object.keys(handlers).join(', ')}`);
-log('worker', `Camunda ${CAMUNDA} | mock API ${MOCK} | outbox ${OUTBOX}`);
+log('worker', `Camunda ${CAMUNDA} | mock API ${MOCK} | outbox ${OUTBOX} | health http://127.0.0.1:${HEALTH_PORT}/health`);
 for (const [type, handler] of Object.entries(handlers)) work(type, handler);

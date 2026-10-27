@@ -9,7 +9,7 @@
   <bpmn:message id="Message_ApprovalRequest" name="booking-approval-request" />
   <bpmn:message id="Message_ApprovalDecision" name="booking-approval-decision">
     <bpmn:extensionElements>
-      <zeebe:subscription correlationKey="=bookingRef" />
+      <zeebe:subscription correlationKey="=requestId" />
     </bpmn:extensionElements>
   </bpmn:message>
   <bpmn:error id="Error_ServiceDown" name="Booking service down" errorCode="BOOKING_SERVICE_DOWN" />
@@ -145,8 +145,8 @@
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="publish-message" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="=bookingRef" target="correlationKey" />
-          <zeebe:input source="={requesterName: requesterName, email: email, venue: venue, bookingDate: bookingDate, startTime: startTime, endTime: endTime, attendees: attendees, purpose: purpose, approver: approver, bookingId: bookingId, bookingRef: bookingRef}" target="messageVariables" />
+          <zeebe:input source="=requestId" target="correlationKey" />
+          <zeebe:input source="={requesterName: requesterName, email: email, venue: venue, bookingDate: bookingDate, startTime: startTime, endTime: endTime, attendees: attendees, purpose: purpose, approver: approver, bookingId: bookingId, bookingRef: bookingRef, requestId: requestId}" target="messageVariables" />
         </zeebe:ioMapping>
         <zeebe:taskHeaders>
           <zeebe:header key="messageName" value="booking-approval-request" />
@@ -357,7 +357,7 @@
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="publish-message" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="=bookingRef" target="correlationKey" />
+          <zeebe:input source="=requestId" target="correlationKey" />
           <zeebe:input source="={decision: decision}" target="messageVariables" />
         </zeebe:ioMapping>
         <zeebe:taskHeaders>

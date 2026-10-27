@@ -4,7 +4,14 @@
 > **No Java or Spring Boot.** Process logic lives in BPMN, DMN, forms, FEEL and REST Outbound Connectors.
 > The only code is the external job worker (`hall-booking/worker/worker.js`, plain Node.js, no libraries).
 
-## 0. Status (2026-10-21)
+## 0. Status (2026-10-27)
+
+**Web app added** (see `APP-PLAN.md`, Option A): `hall-booking/app/`, started with `scripts/start-app.cmd` or `start-all.cmd`, on http://localhost:8090.
+**Correlation key changed** from `bookingRef` to `requestId` (the booking's process instance key, set by the worker): `bookingRef`
+repeats after the booking database is reset, and Camunda won't start a second approval while one with the same key is open.
+Deployed as hall-booking v4 / hall-approval v3; all 19 automated tests pass again.
+
+### Earlier status (2026-10-21)
 
 **Version 2 (review 2) is built, deployed and tested on the local Camunda 8 Run 8.8.32.** See section 8 for results.
 Version 1 (review 1) is saved as git tag `review-1`.
@@ -126,7 +133,7 @@ produces `approved`, `remarks`, `decision`, `reminderSentAt`.
 | Message flow | `MsgFlow_ApprovalRequest`: `Send_ApprovalRequest` → `MsgStart_ApprovalRequested` |
 | Message flow | `MsgFlow_ApprovalDecision`: `Send_Decision` → `Receive_Decision` |
 | Message | `Message_ApprovalRequest` name `booking-approval-request` (start event, no correlation key needed) |
-| Message | `Message_ApprovalDecision` name `booking-approval-decision`, correlation key `=bookingRef` |
+| Message | `Message_ApprovalDecision` name `booking-approval-decision`, correlation key `=requestId` |
 | Error | `Error_ServiceDown` code `BOOKING_SERVICE_DOWN` |
 
 Zeebe does not execute message flows. The send tasks are job tasks of type `publish-message`; the worker publishes
@@ -151,7 +158,7 @@ the message (`POST /v2/messages/publication`, TTL 1 h) and Zeebe delivers it to 
 | `Script_SetReason` | Script (FEEL) | Set rejection reason | `="CONFLICT"` → `outcome` |
 | `Dmn_DecideApprover` | Business rule | Decide approver | decision `decide-approver`, result `approver` |
 | `Rest_HoldSlot` | REST connector | Hold slot | POST `/bookings` (status PENDING), result `={bookingId: response.body.id, bookingRef: "BK-" + string(response.body.id)}` |
-| `Send_ApprovalRequest` | Send task (worker) | Send approval request | type `publish-message`, header `messageName=booking-approval-request`, inputs `correlationKey=bookingRef`, `messageVariables` (requester fields, approver, bookingId, bookingRef) |
+| `Send_ApprovalRequest` | Send task (worker) | Send approval request | type `publish-message`, header `messageName=booking-approval-request`, inputs `correlationKey=requestId`, `messageVariables` (requester fields, approver, bookingId, bookingRef, requestId) |
 | `Receive_Decision` | Receive task | Wait for decision | message `Message_ApprovalDecision` |
 | `Gateway_Decision` | XOR | Decision? | `Flow_Approved` `=decision.outcome = "APPROVED"`, `Flow_Expired` `=decision.outcome = "EXPIRED"`, default `Flow_Rejected` |
 | `Rest_ConfirmSlot` | REST connector | Confirm slot | PATCH `/bookings/{id}`, result `={outcome: "APPROVED"}` |
@@ -173,7 +180,7 @@ the message (`POST /v2/messages/publication`, TTL 1 h) and Zeebe delivers it to 
 | `Script_RecordDecision` | Script (FEEL) | Record decision | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks}` → `decision` |
 | `Script_MarkExpired` | Script (FEEL) | Mark as expired | `={outcome: "EXPIRED", remarks: "Not reviewed within 2 minutes"}` → `decision` |
 | `Gateway_DecisionMerge` | XOR merge | | |
-| `Send_Decision` | Send task (worker) | Send decision | type `publish-message`, header `messageName=booking-approval-decision`, inputs `correlationKey=bookingRef`, `messageVariables={decision: decision}` |
+| `Send_Decision` | Send task (worker) | Send decision | type `publish-message`, header `messageName=booking-approval-decision`, inputs `correlationKey=requestId`, `messageVariables={decision: decision}` |
 | `End_Decided` | End event | Decision sent | |
 
 ### 4.3 Expressions
@@ -193,7 +200,7 @@ the message (`POST /v2/messages/publication`, TTL 1 h) and Zeebe delivers it to 
 
 | Type | Used by | Does | Returns |
 |---|---|---|---|
-| `validate-booking` | `Worker_ValidateRequest` | `durationHours > 0`, `bookingDate >= today`, `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60) | `validation`, plus `outcome` when invalid |
+| `validate-booking` | `Worker_ValidateRequest` | `durationHours > 0`, `bookingDate >= today`, `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60) | `validation`, `requestId` (= process instance key, the messages' correlation key), plus `outcome` when invalid |
 | `publish-message` | `Send_ApprovalRequest`, `Send_Decision` | `POST /v2/messages/publication` with header `messageName`, input `correlationKey`, input `messageVariables` | nothing |
 | `send-reminder` | `Worker_Reminder` | writes `outbox/*_REMINDER_*.txt`, logs | `reminderSentAt` |
 | `send-notification` | `Worker_Notify` | writes `outbox/*_<OUTCOME>_*.txt`, `POST /notifications` (best effort) | `notificationId`, `notifiedAt` |
