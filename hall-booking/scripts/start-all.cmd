@@ -5,5 +5,5 @@ start "Booking service" cmd /k "%~dp0start-mock.cmd"
 start "Camunda" cmd /k "%~dp0start-camunda.cmd"
 start "Worker" cmd /k "%~dp0start-worker.cmd"
 start "Web app" cmd /k "%~dp0start-app.cmd"
-timeout /t 5 /nobreak >nul
+ping -n 6 127.0.0.1 >nul
 start "" http://localhost:8090
