@@ -1,7 +1,7 @@
 {
   "components": [
     {
-      "text": "# Booking service unavailable\nThe booking database could not be reached while handling **{{requesterName}}**'s request for **{{venue}}** on **{{bookingDate}}** ({{startTime}} to {{endTime}}).\n\n**Error:** {{serviceError}}\n\nCheck that the booking service (mock API window) is running, then choose **Retry**. Choose **Cancel** to stop this request and notify the requester.",
+      "text": "# Booking service unavailable\nThe booking database could not be checked for **{{requesterName}}**'s request:\n\n{{#loop sessions}}\n- {{venue}}, {{bookingDate}}, {{startTime}} to {{endTime}}\n{{/loop}}\n\n**Error:** {{serviceError}}\n\nCheck that the booking service (mock API window) is running, then choose **Retry**. Choose **Cancel** to stop this request and notify the requester.",
       "type": "text",
       "id": "Text_ServiceIssue",
       "layout": { "row": "Row_Issue", "columns": null }

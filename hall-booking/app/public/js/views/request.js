@@ -28,8 +28,10 @@ export default async function request(el, ctx, key) {
       <section class="req-head panel">
         <div>
           <div class="eyebrow">Booking request${d.bookingRef ? ` · ${esc(d.bookingRef)}` : ''}</div>
-          <h1>${esc(ctx.venueName(d.venue))}</h1>
-          <div class="when">${esc(fmtDay(d.bookingDate, { weekday: 'long' }))} · ${esc(d.startTime)}–${esc(d.endTime)}</div>
+          ${d.sessions.length > 1
+            ? `<h1>${d.sessions.length} sessions</h1>${d.sessions.map((s) => `<div class="when">${esc(ctx.venueName(s.venue))} · ${esc(fmtDay(s.bookingDate, { weekday: 'long' }))} · ${esc(s.startTime)}–${esc(s.endTime)}</div>`).join('')}`
+            : `<h1>${esc(ctx.venueName(d.venue))}</h1>
+          <div class="when">${esc(fmtDay(d.bookingDate, { weekday: 'long' }))} · ${esc(d.startTime)}–${esc(d.endTime)}</div>`}
         </div>
         <div>${stamp(d.status)}</div>
       </section>
@@ -44,7 +46,7 @@ export default async function request(el, ctx, key) {
         </section>
         <aside style="display:grid;gap:16px;align-content:start">
           ${d.review ? `<section class="panel clock" aria-live="polite">
-            <div class="eyebrow">Waiting for ${esc(ctx.roleName(d.review.approver))}</div>
+            <div class="eyebrow">Waiting for ${esc(ctx.roleName(d.review.approver))}${d.review.steps > 1 ? ` · approval ${esc(d.review.step)} of ${esc(d.review.steps)}` : ''}</div>
             <span class="left" id="left">${timeLeft(d.review.due)}</span>
             <div class="bar-track"><div class="bar-fill" id="fill"></div></div>
             <span class="small muted">${d.review.reminderSent ? 'Reminder sent to the approver.' : 'A reminder goes out after 1 minute.'} The request expires at ${esc(fmtClock(d.review.due))}.</span>
@@ -58,13 +60,13 @@ export default async function request(el, ctx, key) {
               <dt>Requester</dt><dd>${esc(d.requesterName)}<br><span class="muted small">${esc(d.email)}</span></dd>
               <dt>People</dt><dd>${esc(d.attendees)}</dd>
               <dt>Purpose</dt><dd>${esc(d.purpose || '–')}</dd>
-              <dt>Approver</dt><dd>${esc(ctx.roleName(d.approver)) || '<span class="muted">not chosen</span>'}</dd>
+              <dt>${d.approvers.length > 1 ? 'Approvers' : 'Approver'}</dt><dd>${d.approvers.length ? esc(d.approvers.map((r) => ctx.roleName(r)).join(' → ')) : '<span class="muted">not chosen</span>'}</dd>
               ${d.remarks ? `<dt>Remarks</dt><dd>${esc(d.remarks)}</dd>` : ''}
               <dt>Request no.</dt><dd class="mono">${esc(d.key)}</dd>
             </dl>
             ${ctx.kind === 'admin' ? `<p style="margin:12px 0 0"><a class="small" href="${esc(d.operateUrl)}" target="_blank" rel="noopener">Open in Operate ↗</a></p>` : ''}
           </section>
-          ${d.notification ? `<section class="panel"><h2>Email sent</h2>
+          ${d.notification ? `<section class="panel"><h2>${d.notification.emailStatus === 'FAILED' ? 'Email not delivered' : 'Email sent'}</h2>
             <div class="letter"><b>${esc(d.notification.subject)}</b>\nTo: ${esc(d.notification.to)}\n\n${esc(d.notification.message)}</div></section>` : ''}
         </aside>
       </div>`;

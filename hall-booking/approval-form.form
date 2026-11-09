@@ -1,7 +1,7 @@
 {
   "components": [
     {
-      "text": "# Booking approval\n**Booking:** {{bookingRef}}  \n**Approver role:** {{approver}}\n\n- **Requester:** {{requesterName}} ({{email}})\n- **Venue:** {{venue}}\n- **Date:** {{bookingDate}}\n- **Time:** {{startTime}} to {{endTime}}\n- **Attendees:** {{attendees}}\n- **Purpose:** {{purpose}}\n\nThe slot is on hold. A reminder is sent after 1 minute; after 2 minutes the request expires and the slot is released.",
+      "text": "# Booking approval\n**Booking:** {{bookingRef}}  \n**Your role:** {{approver}} (approval {{approvalStep}} of {{approvalSteps}})\n\n- **Requester:** {{requesterName}} ({{email}})\n- **Attendees:** {{attendees}}\n- **Purpose:** {{purpose}}\n\n**Sessions**\n\n{{#loop sessions}}\n- {{venue}}, {{bookingDate}}, {{startTime}} to {{endTime}}\n{{/loop}}\n\nThe slots are on hold. A reminder is sent after 1 minute; after 2 minutes the request expires and the slots are released.",
       "type": "text",
       "id": "Text_Summary",
       "layout": {

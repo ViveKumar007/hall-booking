@@ -1,30 +1,37 @@
-# Seminar Hall & Lab Booking — Camunda 8 (BPMN, DMN, external worker)
+# Seminar Hall & Lab Booking — Camunda 8 (BPMN, DMN, Spring Boot)
 
-A booking workflow for seminar halls and labs, modelled as **two pools**: a *Booking Desk* and a *Hall Administration*
-that exchange messages. Requests are validated by an **external worker**, checked for clashes against a REST booking
-service (**REST connectors**), routed to an approver chosen by a **DMN** table, reminded after 1 minute and expired after
-2 minutes. Booking-service outages go to an admin task (Retry/Cancel). Every path ends with a notification.
+A booking workflow for seminar halls and labs. One request books **one or more sessions**. A **job worker** validates
+it; every session is checked for clashes **in parallel** (REST connectors, multi-instance) inside a **sub-process** with
+**error** (service down) and **timer** (too slow) boundaries; a **DMN** table picks an approver per session; a **Call
+Activity** then asks each approver **in turn** through a reusable child process, with a reminder after 1 minute and
+expiry after 2. Booking-service problems go to an admin task (Retry/Cancel). Every path ends with an email sent by
+the **Email connector** (SMTP settings are connector secrets), then a recorded notification.
+
+The application is a **Spring Boot** backend (REST API, booking register with JPA on H2/PostgreSQL, `@JobWorker`s)
+talking to Camunda through the official Java client.
 
 | Start here | |
 |---|---|
-| [PROJECT-GUIDE.md](PROJECT-GUIDE.md) | How everything works, the run guide, the test cases, and how to build it yourself |
 | [hall-booking/README.md](hall-booking/README.md) | Quick start, demo outline, screenshot checklist |
-| [PLAN.md](PLAN.md) | The specification: element IDs, expressions, messages, worker job types, test results |
+| [backend-springboot/README.md](backend-springboot/README.md) | The backend: layers, job workers, REST API, database tables, configuration |
+| [PLAN.md](PLAN.md) | The specification: element IDs, expressions, variables, job types, test results |
+| [PROJECT-GUIDE.md](PROJECT-GUIDE.md) | Background and run guide (parts still describe the earlier two-pool version) |
 
 ## Quick start (Windows, Camunda 8 Run 8.8)
 
 ```
-hall-booking\scripts\start-mock.cmd       :: mock booking API on http://127.0.0.1:3000
+hall-booking\scripts\start-mail.cmd       :: local mail server, inbox on http://localhost:1080
 hall-booking\scripts\start-camunda.cmd    :: Camunda 8 Run (edit the two paths inside for your machine)
-hall-booking\scripts\start-worker.cmd     :: the external job worker
-hall-booking\scripts\start-app.cmd        :: the web app on http://localhost:8090
-hall-booking\scripts\deploy.cmd           :: deploy BPMN (both pools) + DMN + forms
+hall-booking\scripts\start-backend.cmd    :: Spring Boot backend + pages on http://localhost:8090 (deploys the models)
+hall-booking\scripts\reset-data.cmd       :: back to the 3 seed bookings
 ```
 
-Or double-click `hall-booking\scripts\start-all.cmd` to open all four windows at once.
+Or double-click `hall-booking\scripts\start-all.cmd` to open all three windows at once.
 
 Then open **http://localhost:8090**: book a room, follow its route live, approve it in the inbox. Tasklist and Operate
 (http://localhost:8080, login `demo` / `demo`) keep working alongside.
-Run all 19 automated tests: `powershell -ExecutionPolicy Bypass -File hall-booking\scripts\run-scenarios.ps1`.
+Run all 25 automated tests: `powershell -ExecutionPolicy Bypass -File hall-booking\scripts\run-scenarios.ps1`;
+backend unit tests: `backend-springboot\mvnw.cmd test`.
 
-Requirements: Camunda 8 Run 8.8 with JDK 21, Node.js 18+ (mock API and worker; no npm install needed), Camunda Desktop Modeler 5.x.
+Requirements: Camunda 8 Run 8.8 with JDK 21 (also used by the backend; the Maven wrapper downloads Maven), Node.js 18+
+(only for the local mail server via `npx`), Camunda Desktop Modeler 5.x.

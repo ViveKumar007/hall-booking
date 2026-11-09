@@ -1,0 +1,10 @@
+# Profile "postgres" (SPRING_PROFILES_ACTIVE=postgres): PostgreSQL instead of the H2 file, e.g. in Docker.
+# Credentials come from the environment (secrets), never from this file.
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:hallbooking}
+    username: ${DB_USER:hallbooking}
+    password: ${DB_PASSWORD}
+  h2:
+    console:
+      enabled: false

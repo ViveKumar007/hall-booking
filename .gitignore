@@ -8,3 +8,14 @@ node_modules/
 
 # Emails and reminders written by the worker
 hall-booking/worker/outbox/
+
+# Local connector secrets (SMTP login etc.); secrets.example.cmd is the committed template
+hall-booking/scripts/secrets.cmd
+
+# Spring Boot backend: build output, H2 database file, log file
+backend-springboot/target/
+backend-springboot/data/
+backend-springboot/logs/
+
+# graphify knowledge-graph output (rebuild with /graphify)
+graphify-out/

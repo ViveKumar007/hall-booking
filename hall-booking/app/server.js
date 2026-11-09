@@ -44,8 +44,10 @@ const OUTCOMES = {
 };
 const WAITING_AT = {
   Worker_ValidateRequest: { label: 'Validating', tone: 'live' },
+  SubProcess_CheckAvailability: { label: 'Checking availability', tone: 'live' },
   User_FixService: { label: 'Service issue', tone: 'bad' },
-  Receive_Decision: { label: 'Awaiting approval', tone: 'live' },
+  CallActivity_Approval: { label: 'Awaiting approval', tone: 'live' },
+  Email_NotifyRequester: { label: 'Sending email', tone: 'live' },
   Worker_Notify: { label: 'Notifying', tone: 'live' },
 };
 
@@ -105,29 +107,27 @@ async function variablesOf(pik) {
   return vars;
 }
 
+// Element instances of one process instance. A multi-instance activity appears once as its MULTI_INSTANCE_BODY
+// plus once per item; only the body is kept, so "Check session" over 3 sessions is one step, not four.
 async function elementsOf(pik, state) {
   const filter = { processInstanceKey: pik };
   if (state) filter.state = state;
   const res = await camunda('POST', '/element-instances/search', { filter, sort: [{ field: 'startDate', order: 'ASC' }], page: { limit: 200 } });
-  return res.items || [];
+  const items = res.items || [];
+  const bodies = new Set(items.filter((e) => e.type === 'MULTI_INSTANCE_BODY').map((e) => e.elementId));
+  return items.filter((e) => !bodies.has(e.elementId) || e.type === 'MULTI_INSTANCE_BODY');
 }
 
 async function instance(pik) {
   return camunda('GET', `/process-instances/${pik}`);
 }
 
-// The Hall Approval instance of a booking: the other instance holding the same requestId (= the booking's key).
-// requestId is the messages' correlation key, so there is exactly one. Found once, it never changes: cache it.
-const approvalOf = new Map();
-async function approvalInstanceFor(bookingKey) {
-  if (approvalOf.has(bookingKey)) return approvalOf.get(bookingKey);
-  const res = await camunda('POST', '/variables/search', {
-    filter: { name: 'requestId', value: JSON.stringify(String(bookingKey)) }, page: { limit: 10 },
+// The Hall Approval instances of a booking: one per approver in the chain, started by the Call Activity.
+async function approvalInstancesOf(bookingKey) {
+  const res = await camunda('POST', '/process-instances/search', {
+    filter: { parentProcessInstanceKey: bookingKey }, sort: [{ field: 'startDate', order: 'ASC' }], page: { limit: 20 },
   });
-  const other = (res.items || []).find((v) => String(v.processInstanceKey) !== String(bookingKey));
-  if (!other) return null;
-  approvalOf.set(bookingKey, String(other.processInstanceKey));
-  return approvalOf.get(bookingKey);
+  return (res.items || []).map((pi) => String(pi.processInstanceKey));
 }
 
 function statusOf(pi, vars, activeElementIds) {
@@ -141,16 +141,25 @@ function statusOf(pi, vars, activeElementIds) {
   return { code: 'RUNNING', label: 'In progress', tone: 'live' };
 }
 
+const refsOf = (heldSlots) => (Array.isArray(heldSlots) ? heldSlots.map((h) => h.ref).join(', ') : null);
+const sessionsOf = (vars) => (Array.isArray(vars.sessions) ? vars.sessions.map(({ venue, bookingDate, startTime, endTime }) => ({ venue, bookingDate, startTime, endTime })) : []);
+
+// One booking request for the pages. venue/bookingDate/startTime/endTime describe the first session, so pages
+// that show one line per request keep working; `sessions` has all of them.
 function summary(pi, vars, status) {
+  const sessions = sessionsOf(vars);
+  const first = sessions[0] || {};
   return {
     key: String(pi.processInstanceKey),
     state: pi.state,
     startDate: pi.startDate,
     endDate: pi.endDate || null,
-    requesterName: vars.requesterName, email: vars.email, venue: vars.venue,
-    bookingDate: vars.bookingDate, startTime: vars.startTime, endTime: vars.endTime,
+    requesterName: vars.requesterName, email: vars.email,
+    venue: first.venue, bookingDate: first.bookingDate, startTime: first.startTime, endTime: first.endTime, sessions,
     attendees: vars.attendees, purpose: vars.purpose,
-    approver: vars.approver || null, bookingRef: vars.bookingRef || null, outcome: vars.outcome || null,
+    approvers: Array.isArray(vars.approvers) ? vars.approvers : [],
+    approver: Array.isArray(vars.approvers) ? vars.approvers[0] : null,
+    bookingRef: refsOf(vars.heldSlots), outcome: vars.outcome || null,
     status,
   };
 }
@@ -172,29 +181,37 @@ async function listBookings({ email, limit = 25 }) {
 }
 
 // The two-lane routing slip: which steps to show, in which lane, and what to say about them.
+// Lanes: "desk" is the main process (hall-booking), "admin" the approval child processes (hall-approval).
+// detail(v, el, a): v = booking variables, el = the element instance, a = that approval instance's variables.
+const n = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const STEPS = {
-  StartEvent_Requested: { lane: 'desk', label: () => 'Request submitted', detail: (v) => `${v.requesterName} · ${v.attendees} people` },
-  Script_PrepareSlot: { lane: 'desk', label: () => 'Slot prepared', detail: (v) => v.slot ? `${v.startTime}–${v.endTime}, ${v.slot.durationHours} h` : '' },
-  Worker_ValidateRequest: { lane: 'desk', label: () => 'Checked by worker', detail: (v) => v.validation ? (v.validation.valid ? `Valid · venue holds ${v.validation.capacity}` : `Rejected: ${OUTCOMES[v.validation.reason]?.label || v.validation.reason}`) : 'Waiting for the worker' },
-  Rest_FetchBookings: { lane: 'desk', label: () => 'Booking register read', detail: (v, el) => el.state === 'TERMINATED' ? 'Booking service did not answer' : '' },
+  StartEvent_Requested: { lane: 'desk', label: () => 'Request submitted', detail: (v) => `${v.requesterName} · ${v.attendees} people · ${n(sessionsOf(v).length, 'session')}` },
+  Script_PrepareSlot: { lane: 'desk', label: () => 'Sessions prepared', detail: (v) => sessionsOf(v).map((s) => `${s.startTime}–${s.endTime}`).join(', ') },
+  Worker_ValidateRequest: { lane: 'desk', label: () => 'Checked by worker', detail: (v, el) => el.state === 'ACTIVE' ? 'Waiting for the worker' : (v.validation && v.validation.valid ? 'Valid' : '') },
+  Boundary_Invalid: { lane: 'desk', label: () => 'Request invalid', detail: (v) => (v.validation && v.validation.message) || '' },
+  Rest_CheckSession: { lane: 'desk', label: () => 'Sessions checked in parallel', detail: (v, el) => el.state === 'TERMINATED' ? 'Interrupted' : `${n(sessionsOf(v).length, 'register lookup')}` },
+  Script_DetectConflict: { lane: 'desk', label: () => 'Clash check', detail: (v) => v.conflictCheck ? (v.conflictCheck.hasConflict ? `Clash: ${v.conflictCheck.clashes.map((c) => `${c.venue} ${c.bookingDate} ${c.startTime}–${c.endTime}`).join(', ')}` : 'All sessions free') : '' },
   Boundary_ServiceDown: { lane: 'desk', label: () => 'Booking service unreachable', detail: (v) => v.serviceError || '' },
+  Timer_CheckTimeout: { lane: 'desk', label: () => 'Availability check timed out', detail: () => 'No answer within 30 seconds' },
   User_FixService: { lane: 'desk', label: () => 'Admin resolves service issue', detail: (v, el) => el.state === 'ACTIVE' ? 'Waiting for Retry or Cancel' : (v.serviceFixAction === 'RETRY' ? 'Retried' : 'Cancelled') },
-  Script_DetectConflict: { lane: 'desk', label: () => 'Clash check', detail: (v) => v.conflictCheck ? (v.conflictCheck.hasConflict ? 'Overlaps an existing booking' : 'Slot is free') : '' },
   Script_SetReason: { lane: 'desk', label: () => 'Slot already taken', detail: () => '' },
   Script_SetServiceError: { lane: 'desk', label: () => 'Request cancelled', detail: () => 'Booking service unavailable' },
-  Dmn_DecideApprover: { lane: 'desk', label: () => 'Approver chosen', detail: (v) => v.approver ? `${roleName(v.approver)} (decision table)` : '' },
-  Rest_HoldSlot: { lane: 'desk', label: () => 'Slot held', detail: (v) => v.bookingRef ? `${v.bookingRef}, pending` : '' },
-  Send_ApprovalRequest: { lane: 'desk', label: () => 'Approval request sent', detail: () => 'Message to Hall Administration', message: 'out' },
-  MsgStart_ApprovalRequested: { lane: 'admin', label: () => 'Request received', detail: () => 'New review opened', message: 'in' },
+  Dmn_DecideApprover: { lane: 'desk', label: () => 'Approver per session', detail: (v) => Array.isArray(v.sessionApprovers) ? `${v.sessionApprovers.map(roleName).join(', ')} (decision table)` : '' },
+  Script_PlanApprovals: { lane: 'desk', label: () => 'Approval chain', detail: (v) => Array.isArray(v.approvers) ? v.approvers.map(roleName).join(' → ') : '' },
+  Rest_HoldSlot: { lane: 'desk', label: () => 'Slots held', detail: (v) => v.heldSlots ? `${refsOf(v.heldSlots)}, pending` : '' },
+  CallActivity_Approval: { lane: 'desk', label: () => 'Approval requested', detail: (v) => Array.isArray(v.approvers) ? `${n(v.approvers.length, 'approver')}, one after another` : '', message: 'out' },
+  StartEvent_Approval: { lane: 'admin', label: () => 'Review opened', detail: (v, el, a) => `For ${roleName(a.approver)}${a.approvalSteps > 1 ? ` (step ${a.approvalStep} of ${a.approvalSteps})` : ''}`, message: 'in' },
   User_Approval: { lane: 'admin', label: () => 'Review by approver', detail: (v, el, a) => el.state === 'ACTIVE' ? `Waiting for ${roleName(a.approver)}` : (el.state === 'TERMINATED' ? 'No response in time' : (a.approved ? 'Approved' : 'Rejected') + (a.remarks ? `: “${a.remarks}”` : '')) },
   Worker_Reminder: { lane: 'admin', label: () => 'Reminder sent', detail: (v, el, a) => `To ${roleName(a.approver)} after 1 minute` },
   Script_MarkExpired: { lane: 'admin', label: () => 'Marked as expired', detail: () => 'Not reviewed within 2 minutes' },
-  Send_Decision: { lane: 'admin', label: () => 'Decision sent', detail: (v, el, a) => a.decision ? a.decision.outcome : '', message: 'out' },
-  Receive_Decision: { lane: 'desk', label: () => 'Decision received', detail: (v, el) => el.state === 'ACTIVE' ? 'Waiting for Hall Administration' : (v.decision ? v.decision.outcome : ''), message: 'in' },
-  Rest_ConfirmSlot: { lane: 'desk', label: () => 'Slot confirmed', detail: (v) => v.bookingRef || '' },
-  Rest_ReleaseRejected: { lane: 'desk', label: () => 'Slot released', detail: () => 'Request was rejected' },
-  Rest_ReleaseExpired: { lane: 'desk', label: () => 'Slot released', detail: () => 'Request expired' },
-  Worker_Notify: { lane: 'desk', label: () => 'Requester notified', detail: (v) => v.email ? `Email to ${v.email}` : '' },
+  End_Decided: { lane: 'admin', label: () => 'Decision returned', detail: (v, el, a) => a.decision ? `${a.decision.outcome} by ${roleName(a.approver)}` : '', message: 'out' },
+  Script_SummarizeDecision: { lane: 'desk', label: () => 'Decisions combined', detail: (v) => v.decision ? v.decision.outcome : '', message: 'in' },
+  Rest_ConfirmSlot: { lane: 'desk', label: () => 'Slots confirmed', detail: (v) => refsOf(v.heldSlots) || '' },
+  Rest_ReleaseRejected: { lane: 'desk', label: () => 'Slots released', detail: () => 'Request was rejected' },
+  Rest_ReleaseExpired: { lane: 'desk', label: () => 'Slots released', detail: () => 'Request expired' },
+  Email_NotifyRequester: { lane: 'desk', label: () => 'Email sent', detail: (v, el) => el.state === 'ACTIVE' ? 'Sending…' : (el.state === 'TERMINATED' ? 'Not delivered' : `To ${v.email} (Email connector, SMTP)`) },
+  Boundary_EmailFailed: { lane: 'desk', label: () => 'Email failed', detail: (v) => v.emailError || 'Mail server unreachable' },
+  Worker_Notify: { lane: 'desk', label: () => 'Notification recorded', detail: (v) => v.emailStatus === 'FAILED' ? 'Kept for follow-up; the email did not go out' : 'In the notifications log' },
 };
 const roleName = (id) => (ROLES.find((r) => r.id === id) || {}).name || id || '';
 
@@ -205,30 +222,37 @@ async function bookingDetail(pik) {
   const activeIds = deskEls.filter((e) => e.state === 'ACTIVE').map((e) => e.elementId);
   const status = statusOf(pi, vars, activeIds);
 
-  const approvalKey = vars.requestId ? await approvalInstanceFor(pik) : null;
-  let adminVars = {}, adminEls = [], review = null;
-  if (approvalKey) {
-    [adminVars, adminEls] = await Promise.all([variablesOf(approvalKey), elementsOf(approvalKey)]);
-    const open = adminEls.find((e) => e.elementId === 'User_Approval' && e.state === 'ACTIVE');
+  // One Hall Approval instance per approver in the chain; each element remembers whose variables it uses.
+  const approvalKeys = await approvalInstancesOf(pik);
+  const approvals = await Promise.all(approvalKeys.map(async (k) => {
+    const [a, els] = await Promise.all([variablesOf(k), elementsOf(k)]);
+    return { key: k, vars: a, els: els.map((e) => ({ ...e, approvalVars: a })) };
+  }));
+  let review = null;
+  for (const ap of approvals) {
+    const open = ap.els.find((e) => e.elementId === 'User_Approval' && e.state === 'ACTIVE');
     if (open) {
       const due = new Date(new Date(open.startDate).getTime() + APPROVAL_MINUTES * 60000).toISOString();
-      review = { since: open.startDate, due, reminderSent: !!adminVars.reminderSentAt, approver: adminVars.approver };
+      review = { since: open.startDate, due, reminderSent: !!ap.vars.reminderSentAt, approver: ap.vars.approver, step: ap.vars.approvalStep, steps: ap.vars.approvalSteps };
     }
   }
 
-  // A step "happened" when it finished (a review or a wait for a message can take minutes); running steps go last.
-  // Sending is the exception: the message is delivered while the send step is still finishing, so a send counts
-  // from its start. That keeps every send just before its receive.
+  // A step "happened" when it finished (a review can take minutes); running steps go last. Hand-overs between the
+  // lanes are the exception: a hand-over counts from its start, so it sorts just before the step that receives it.
+  // Zeebe often finishes a whole chain (timer -> child end -> parent's next step) in the same millisecond; then the
+  // element instance key decides, as keys grow in creation order (one partition on Camunda 8 Run).
   const happened = (e) => (STEPS[e.elementId].message === 'out' ? new Date(e.startDate).getTime()
     : e.endDate ? new Date(e.endDate).getTime() : Infinity);
-  const steps = [...deskEls, ...adminEls]
+  const byKey = (a, b) => (BigInt(a.elementInstanceKey) < BigInt(b.elementInstanceKey) ? -1 : 1);
+  const steps = [...deskEls, ...approvals.flatMap((ap) => ap.els)]
     .filter((e) => STEPS[e.elementId])
-    .sort((a, b) => (happened(a) - happened(b)) || (new Date(a.startDate) - new Date(b.startDate)))
+    .sort((a, b) => (happened(a) - happened(b)) || (new Date(a.startDate) - new Date(b.startDate)) || byKey(a, b))
     .map((e) => {
       const def = STEPS[e.elementId];
+      const a = e.approvalVars || {};
       return {
         id: e.elementId, lane: def.lane, message: def.message || null, state: e.state,
-        at: def.message === 'out' ? e.startDate : (e.endDate || e.startDate), label: def.label(vars, e, adminVars), detail: def.detail(vars, e, adminVars) || '',
+        at: def.message === 'out' ? e.startDate : (e.endDate || e.startDate), label: def.label(vars, e, a), detail: def.detail(vars, e, a) || '',
       };
     });
 
@@ -237,7 +261,7 @@ async function bookingDetail(pik) {
 
   return {
     ...summary(pi, vars, status),
-    approvalKey,
+    approvalKeys,
     review,
     remarks: (vars.decision && vars.decision.remarks) || null,
     serviceError: vars.serviceError || null,
@@ -252,16 +276,20 @@ async function openTasks(kind, role) {
   const elementId = kind === 'service' ? 'User_FixService' : 'User_Approval';
   const res = await camunda('POST', '/user-tasks/search', { filter: { elementId, state: 'CREATED' }, page: { limit: 100 } });
   const tasks = await Promise.all((res.items || []).map(async (t) => {
-    const v = await variablesOf(t.processInstanceKey);
+    // Review tasks live in a Hall Approval child instance: its parent is the booking. Service tasks are in the booking itself.
+    const [v, pi] = await Promise.all([variablesOf(t.processInstanceKey), kind === 'approval' ? instance(t.processInstanceKey).catch(() => ({})) : null]);
+    const sessions = sessionsOf(v);
+    const first = sessions[0] || {};
     const created = t.creationDate;
     return {
       key: String(t.userTaskKey), kind, processInstanceKey: String(t.processInstanceKey), created,
       due: kind === 'approval' ? new Date(new Date(created).getTime() + APPROVAL_MINUTES * 60000).toISOString() : null,
       reminderSent: !!v.reminderSentAt,
-      requesterName: v.requesterName, email: v.email, venue: v.venue, bookingDate: v.bookingDate,
-      startTime: v.startTime, endTime: v.endTime, attendees: v.attendees, purpose: v.purpose,
-      approver: v.approver || null, bookingRef: v.bookingRef || null, serviceError: v.serviceError || null,
-      bookingKey: kind === 'service' ? String(t.processInstanceKey) : (v.requestId ? String(v.requestId) : null),
+      requesterName: v.requesterName, email: v.email, venue: first.venue, bookingDate: first.bookingDate,
+      startTime: first.startTime, endTime: first.endTime, sessions, attendees: v.attendees, purpose: v.purpose,
+      approver: v.approver || null, approvalStep: v.approvalStep || null, approvalSteps: v.approvalSteps || null,
+      bookingRef: v.bookingRef || refsOf(v.heldSlots), serviceError: v.serviceError || null,
+      bookingKey: kind === 'service' ? String(t.processInstanceKey) : (pi && pi.parentProcessInstanceKey ? String(pi.parentProcessInstanceKey) : null),
     };
   }));
   return tasks
@@ -272,17 +300,25 @@ async function openTasks(kind, role) {
 // ---------------------------------------------------------------- validation of new requests
 
 const HOURS = Array.from({ length: 11 }, (_, i) => `${String(8 + i).padStart(2, '0')}:00`);
+// Form checks only (missing or malformed fields). Business rules (past dates, capacity, overlaps) are left
+// to the worker, so the process shows them as outcomes. Session errors are keyed by the single-session field
+// name for the first session (the current form) and as sessions.<n>.<field> for the others.
 function checkNewBooking(b) {
   const errors = {};
   const need = (k, msg) => { if (b[k] === undefined || b[k] === null || String(b[k]).trim() === '') errors[k] = msg; };
   need('requesterName', 'Enter your name.');
   need('email', 'Enter your email.');
   if (b.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email)) errors.email = 'Enter an email like name@college.edu.';
-  if (!VENUES.some((v) => v.id === b.venue)) errors.venue = 'Choose a venue.';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.bookingDate || '')) errors.bookingDate = 'Choose a date.';
-  if (!HOURS.includes(b.startTime)) errors.startTime = 'Choose a start time.';
-  if (!HOURS.includes(b.endTime)) errors.endTime = 'Choose an end time.';
   if (!Number.isInteger(b.attendees) || b.attendees < 1) errors.attendees = 'Enter the number of people (at least 1).';
+  if (!b.sessions.length) errors.sessions = 'Add at least one session.';
+  if (b.sessions.length > 10) errors.sessions = 'Ten sessions at most per request.';
+  b.sessions.forEach((s, i) => {
+    const key = (field) => (i === 0 ? field : `sessions.${i}.${field}`);
+    if (!VENUES.some((v) => v.id === s.venue)) errors[key('venue')] = 'Choose a venue.';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s.bookingDate || '')) errors[key('bookingDate')] = 'Choose a date.';
+    if (!HOURS.includes(s.startTime)) errors[key('startTime')] = 'Choose a start time.';
+    if (!HOURS.includes(s.endTime)) errors[key('endTime')] = 'Choose an end time.';
+  });
   return errors;
 }
 
@@ -320,10 +356,12 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && p === '/api/bookings') {
     const b = await readJson(req);
+    // The process takes a list of sessions. The current form sends one session as flat fields; a list is used as is.
+    const raw = Array.isArray(b.sessions) ? b.sessions : [{ venue: b.venue, bookingDate: b.bookingDate, startTime: b.startTime, endTime: b.endTime }];
     const booking = {
-      requesterName: String(b.requesterName || '').trim(), email: String(b.email || '').trim(), venue: b.venue,
-      bookingDate: b.bookingDate, startTime: b.startTime, endTime: b.endTime,
+      requesterName: String(b.requesterName || '').trim(), email: String(b.email || '').trim(),
       attendees: Number(b.attendees), purpose: String(b.purpose || '').trim(),
+      sessions: raw.map((s) => ({ venue: s.venue, bookingDate: s.bookingDate, startTime: s.startTime, endTime: s.endTime })),
     };
     const errors = checkNewBooking(booking);
     if (Object.keys(errors).length) return send(res, 400, { error: 'Some fields need attention.', fields: errors });

@@ -1,0 +1,7 @@
+{
+  "bookings": [
+    { "hall": "hall-a", "day": "2027-01-11", "startHour": 10, "endHour": 12, "status": "CONFIRMED", "requester": "Dr. Rao" },
+    { "hall": "hall-b", "day": "2027-01-11", "startHour": 14, "endHour": 16, "status": "CONFIRMED", "requester": "Dr. Meena" },
+    { "hall": "lab-1", "day": "2027-01-12", "startHour": 9, "endHour": 13, "status": "CONFIRMED", "requester": "Prof. Iyer" }
+  ]
+}

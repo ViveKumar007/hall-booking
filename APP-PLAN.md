@@ -1,6 +1,11 @@
 # Hall Booking App — Implementation Plan
 
-> **Status (2026-10-27): Option A is built** (review the next day, so the faster option). Phases 1–6 and 8 are done:
+> **Status (2026-11-09): Option B's backend is built** in `backend-springboot/` (Spring Boot 3.5, `@JobWorker`s, JPA on
+> H2/PostgreSQL, Camunda Java client); it replaced the Node server, the Node worker and json-server, and serves the same
+> pages with the same `/api`. The booking register moved into the backend, so the optional H2 phase is done too. Next: the
+> React frontend (course guidelines) instead of the plain pages. See `backend-springboot/README.md`.
+>
+> Earlier status (2026-10-27): Option A was built (review the next day, so the faster option). Phases 1–6 and 8 were done:
 > `hall-booking/app/` (server.js + public/), started with `scripts/start-app.cmd` or `start-all.cmd`, on http://localhost:8090.
 > The pages only call `/api`, so Option B (Spring Boot) can still replace the Node server later without changing them.
 > Found while building: `bookingRef` can repeat after a data reset, so the messages now use `requestId` (see PLAN.md §0).

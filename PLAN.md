@@ -1,53 +1,69 @@
-# Project 28 — Seminar Hall & Lab Booking (Camunda 8.8, BPMN + DMN + external worker)
+# Project 28 — Seminar Hall & Lab Booking (Camunda 8.8, BPMN + DMN + job workers)
 
 > Instructions for Claude Code. Read this whole file before changing anything in `hall-booking/`.
-> **No Java or Spring Boot.** Process logic lives in BPMN, DMN, forms, FEEL and REST Outbound Connectors.
-> The only code is the external job worker (`hall-booking/worker/worker.js`, plain Node.js, no libraries).
+> Process logic lives in BPMN, DMN, forms, FEEL and the REST and Email Outbound Connectors. The application is the
+> Spring Boot backend in `backend-springboot/` (REST API, booking register with JPA, `@JobWorker`s); see its README.
+> Still to come for Milestone 2 (13 Nov 2026): the React frontend and Docker.
 
-## 0. Status (2026-10-27)
+## 0. Status (2026-11-09)
 
-**Web app added** (see `APP-PLAN.md`, Option A): `hall-booking/app/`, started with `scripts/start-app.cmd` or `start-all.cmd`, on http://localhost:8090.
-**Correlation key changed** from `bookingRef` to `requestId` (the booking's process instance key, set by the worker): `bookingRef`
-repeats after the booking database is reset, and Camunda won't start a second approval while one with the same key is open.
-Deployed as hall-booking v4 / hall-approval v3; all 19 automated tests pass again.
+**Spring Boot backend added** (`backend-springboot/`, Spring Boot 3.5.16, `camunda-spring-boot-starter` 8.8.44, Java 21),
+replacing the Node worker, the Node web server and the json-server mock:
 
-### Earlier status (2026-10-21)
-
-**Version 2 (review 2) is built, deployed and tested on the local Camunda 8 Run 8.8.32.** See section 8 for results.
-Version 1 (review 1) is saved as git tag `review-1`.
-
-### Changes for review 2
-
-The review-2 rubric adds *External Workers & REST Connectors* and *Deployment & Workflow Execution*, so version 2 adds:
-
-| Change | Why |
+| Part | Now |
 |---|---|
-| **Two pools** (collaboration): *Booking Desk* (`hall-booking`) and *Hall Administration* (`hall-approval`), connected by two **message flows** | Shows inter-process communication; the approval office is a separate participant |
-| **External worker** (`worker/worker.js`) handling 4 job types: `validate-booking`, `publish-message`, `send-reminder`, `send-notification` | Rubric: external workers. REST connectors stay for all booking-database calls |
-| **Validate request** (worker) before the conflict check: invalid times, past dates, venue capacity | New outcomes `PAST_DATE`, `OVER_CAPACITY`; `INVALID_TIME` moved here from the gateway |
-| **Error boundary** on *Fetch existing bookings* → *Resolve service issue* user task → Retry or Cancel | Booking service outages become a handled path instead of an incident. New outcome `SERVICE_UNAVAILABLE` |
-| **Non-interrupting reminder timer** (1 min) next to the interrupting expiry timer (2 min) | Shows both timer types |
-| Notify requester is now a worker task (email saved to `worker/outbox/`, logged in `/notifications`) | Notification works even when the booking service is down |
-| Test dates moved to **January 2027** | The worker rejects past dates; October 2026 dates are now in the past |
-| Capacity shown in the venue options; approval form shows `bookingRef` and the reminder/expiry rule | Testers can see the limits |
-| `run-scenarios.ps1` covers 19 automated cases; 3 manual cases documented | More test coverage |
+| Job workers | `@JobWorker` methods with `@VariablesAsType` records: `validate-booking` (throws `ZeebeBpmnError` INVALID_REQUEST), `send-reminder`, `record-notification` |
+| Booking register | `/register/bookings` in the backend, JPA entities in H2 (file `backend-springboot/data`) or PostgreSQL (profile `postgres`); connector secret renamed `MOCK_BASE_URL` → `BOOKING_API_URL` |
+| Frontend API | `/api/**` controllers using the official Camunda Java client (start, user task completion, searches); request lists come from the database |
+| Outage demos | `POST /api/demo/register-mode` {UP, DOWN, SLOW} instead of closing or slowing the json-server window |
+| Start-up | The backend deploys the DMN, forms and both BPMN files, and seeds or imports the register |
 
-### Changes for review 1 (kept)
+Deployed as hall-booking v10 / hall-approval v9. **25 of 25 automated tests pass** against the backend, 15 unit tests
+pass (`mvnw test`), manual S1 and T1 pass. The Node files `worker/worker.js`, `app/server.js` and their start scripts are
+unused (not started by `start-all.cmd`) and can be deleted.
 
-Target Camunda 8 Run locally (not SaaS); mock API on `127.0.0.1:3000` without a tunnel; `MOCK_BASE_URL` set as an
-environment variable by `start-camunda.cmd`; expiry timer `PT2M` instead of `PT30S`; one-click `deploy.cmd`.
+### Email connector (2026-11-08)
+
+**Email connector added** (rubric: Connectors and FEEL). The requester is now emailed by the out-of-the-box **Email
+Outbound Connector** over SMTP to a local mail server (MailDev, `scripts/start-mail.cmd`, inbox http://localhost:1080).
+SMTP host, port, login and sender are **connector secrets** (`{{secrets.SMTP_*}}`, `{{secrets.MAIL_FROM}}`) from the
+git-ignored `scripts/secrets.cmd`. A FEEL script composes the message once; an error boundary (`EMAIL_FAILED`) keeps a
+mail outage from blocking the booking; the worker job `record-notification` logs the result. Deployed as hall-booking v8.
+`run-scenarios.ps1` now also checks that every scenario's email reached the inbox.
+
+**Mandatory BPMN constructs added** for the official guidelines (Milestone 1 rubric: multi-instance, sub-process with
+error and timer boundaries, call activity). One request now books **one or more sessions**:
+
+| Change | Construct |
+|---|---|
+| Start payload has `sessions` (list of venue, date, start, end); the Tasklist start form uses a dynamic list | Data contract |
+| *Check availability* is an **embedded sub-process** with an **error boundary** (service down) and a **timer boundary** (no answer in 30 s) | Sub-process + error/timer boundaries |
+| *Check session* (REST), *Decide approver* (DMN), *Hold slot*, *Confirm slot*, *Release slot* (REST) are **parallel multi-instance** over the sessions | Parallel MI |
+| *Get approval* is a **Call Activity**, **sequential multi-instance** over the approvers, calling the reusable child process `hall-approval` (own file); stops at the first decision that is not APPROVED | Call activity + sequential MI |
+| *Validate request* throws **BPMN error** `INVALID_REQUEST`, caught by an error boundary (was: a gateway on `validation.valid`) | Business error handling |
+| The two message pools and the `publish-message` job type are gone (the call activity replaces them) | Simpler |
+
+Deployed as hall-booking v7 / hall-approval v6 (now v8 / v7 with the Email connector). **25 of 25 automated tests pass** (19 old + 6 multi-session), plus
+manual T1 (timer boundary). Version before this change: commit `9b271ae`; review 1: tag `review-1`.
+
+### Earlier status
+
+- 2026-10-27: web app added (`APP-PLAN.md`, Option A) on http://localhost:8090; message correlation moved to `requestId`.
+- 2026-10-21 (review 2): two pools with message flows, external worker, validation, service-down handling, reminder timer.
 
 ## 1. Goal and rules
 
-A booking workflow with validation, conflict detection, DMN-based approver selection, approval by a separate
-administration process, reminders, automatic release of unapproved bookings, and handling of booking-service outages.
+A booking workflow with validation, conflict detection per session, DMN-based approver selection, an approval chain
+run by a reusable child process, reminders, automatic release of unapproved bookings, and handling of booking-service
+outages and slowness.
 
 - Target: Camunda 8.8 (Camunda 8 Run). Zeebe-flavoured BPMN (`zeebe:` namespace), **Camunda user tasks** (`<zeebe:userTask />`).
-- Every element, pool and message flow has diagram interchange (`bpmndi`). Same for the DMN (`dmndi`).
+- Every element has diagram interchange (`bpmndi`), with label bounds where the default would overlap a line. Same for the DMN (`dmndi`).
 - IDs below are fixed. Do not rename them.
-- Course requirements covered: user tasks with Camunda Forms, exclusive gateways, FEEL script tasks, REST connectors,
-  external worker, business rule task (DMN), timer boundary events (interrupting and non-interrupting), error boundary
-  event, message send/receive between pools, notification step.
+- Constructs covered: user tasks with Camunda Forms, exclusive gateways (all with default flows), FEEL script tasks,
+  REST connectors and an Email connector with externalized secrets, job workers with a BPMN error, business rule task (DMN), parallel and
+  sequential multi-instance, embedded sub-process, error and timer boundary events (interrupting and non-interrupting),
+  call activity with explicit input/output mappings, notification step.
 
 ### Local environment (this machine)
 
@@ -56,50 +72,50 @@ administration process, reminders, automatic release of unapproved bookings, and
 | Camunda 8 Run | `E:\camunda8-run-8.8-windows-x86_64\c8run-8.8.32` |
 | JDK for c8run | `E:\jdk-21.0.6`. Do **not** use `D:\`: c8run searches `JAVA_HOME` for a file called `java`, and on the D: drive root it finds a source folder first. |
 | Operate / Tasklist | http://localhost:8080/operate, http://localhost:8080/tasklist (`demo` / `demo`) |
-| Camunda REST API (scripts, worker) | http://localhost:8080/v2 (unprotected in c8run) |
+| Camunda REST API (scripts, backend) | http://localhost:8080/v2 (unprotected in c8run) |
 | Zeebe gRPC (Desktop Modeler deploy) | `http://localhost:26500`, authentication None |
-| Mock API | http://127.0.0.1:3000 (Node 24, `npx json-server@0.17.4`) |
-| Worker | Node 24, `node worker/worker.js` |
+| Mail server | MailDev 3.0.0 (`npx maildev@3.0.0`): SMTP 127.0.0.1:1025 (login from `secrets.cmd`), inbox http://localhost:1080, REST `GET /api/email` |
+| Backend | `backend-springboot`, `mvnw spring-boot:run` (`scripts/start-backend.cmd`) on http://localhost:8090: pages, `/api`, `/register`, job workers; H2 console /h2-console |
+| Maven | none installed: the Maven wrapper (`mvnw.cmd`) downloads Maven 3.10.0 into `~/.m2/wrapper` |
 | Desktop Modeler | `E:\camunda-modeler-5.49.0-win-x64` (form schemaVersion 19). Launch by double-click: from VS Code's terminal it inherits `ELECTRON_RUN_AS_NODE=1` and quits. |
 
 ### Files (folder `hall-booking/`)
 
 ```
 hall-booking/
-├─ hall-booking.bpmn          collaboration: processes hall-booking (Booking Desk) + hall-approval (Hall Administration)
+├─ hall-booking.bpmn          main process hall-booking
+├─ hall-approval.bpmn         reusable child process hall-approval (called by the Call Activity)
 ├─ decide-approver.dmn        decision id: decide-approver
-├─ booking-request-form.form  form id: booking-request-form
+├─ booking-request-form.form  form id: booking-request-form (dynamic list of sessions)
 ├─ approval-form.form         form id: approval-form
 ├─ service-fix-form.form      form id: service-fix-form
-├─ worker/worker.js           external job worker (4 job types)
-├─ worker/outbox/             emails and reminders written by the worker (git-ignored)
-├─ mock/db.seed.json          seed data (3 bookings, January 2027)
-├─ mock/db.json               live data (git-ignored, created from the seed)
-├─ mock/README.md             how the mock API works
-├─ scripts/start-mock.cmd     json-server on 127.0.0.1:3000
-├─ scripts/start-camunda.cmd  c8run start with JAVA_HOME + MOCK_BASE_URL
-├─ scripts/start-worker.cmd   the external worker
-├─ scripts/stop-camunda.cmd   c8run stop
-├─ scripts/deploy.cmd         deploy DMN + 3 forms + BPMN via REST
-├─ scripts/reset-mock.cmd     copy seed over db.json
+├─ app/public/                the current pages (plain HTML/CSS/JS), served by the backend until the React app
+├─ mock/db.json               old json-server data (git-ignored), imported once into the backend's register
+├─ scripts/start-*.cmd        mail, camunda, backend, all
+├─ scripts/secrets.example.cmd connector secrets template (SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM)
+├─ scripts/secrets.cmd        the real values (git-ignored; created from the example on first start)
+├─ scripts/deploy.cmd         deploy DMN + 3 forms + both BPMN files via REST
+├─ scripts/reset-data.cmd     POST /api/demo/reset: back to the 3 seed bookings
 ├─ scripts/run-scenarios.ps1  automated test cases
 └─ README.md                  setup, demo steps, test cases, screenshot checklist
+
+backend-springboot/           Spring Boot backend (see backend-springboot/README.md for layers, API and tables)
 ```
 
-## 2. Mock API
+## 2. Booking register (Spring Boot)
 
-`npx json-server@0.17.4 --watch mock/db.json --host 127.0.0.1 --port 3000`. Bind to `127.0.0.1` (Node may bind
-`localhost` to IPv6 only; the Java connector runtime uses IPv4). Connector URLs use `{{secrets.MOCK_BASE_URL}}`.
+`RegisterController` in the backend, same contract as the json-server mock it replaced. Connector URLs use
+`{{secrets.BOOKING_API_URL}}` = `http://127.0.0.1:8090/register` (IPv4 address: the connector runtime connects over IPv4).
+`RegisterMode` DOWN answers 503, SLOW waits 40 s, for the error and timer boundary demos.
 
 | Call | Used by | Response |
 |---|---|---|
-| `GET /bookings` | Fetch existing bookings | array of bookings |
-| `POST /bookings` | Hold slot | created booking incl. `id` |
-| `PATCH /bookings/{id}` | Confirm slot | updated booking |
-| `DELETE /bookings/{id}` | Release slot (rejected / expired) | `{}` |
-| `POST /notifications` | Worker, Notify requester (best effort) | created notification |
+| `GET /bookings?hall={venue}&day={date}` | Check session (once per session) | bookings of that venue and day |
+| `POST /bookings` | Hold slot (once per session) | created booking incl. `id` |
+| `PATCH /bookings/{id}` | Confirm slot (once per held slot) | updated booking |
+| `DELETE /bookings/{id}` | Release slot, rejected / expired (once per held slot) | `{}` |
 
-Seed (`mock/db.seed.json`). Booking field names differ from process variable names on purpose (FEEL filter scoping):
+Seed (`backend-springboot/src/main/resources/seed/register-seed.json`, ids assigned by the database). Booking field names differ from process variable names on purpose (FEEL filter scoping):
 
 ```json
 { "bookings": [
@@ -109,113 +125,169 @@ Seed (`mock/db.seed.json`). Booking field names differ from process variable nam
   "notifications": [] }
 ```
 
-## 3. Process variables
+## 3. Process variables (data contract)
 
-From the start form: `requesterName`, `email`, `venue` (`hall-a` | `hall-b` | `lab-1`), `bookingDate` (`yyyy-MM-dd`),
-`startTime`, `endTime` (`HH:00`), `attendees`, `purpose`.
+**Start payload** (`hall-booking`):
 
-Booking Desk produces: `slot`, `validation` (`{valid, reason, capacity, checkedOn}`), `existing`, `conflictCheck`,
-`serviceError`, `serviceFixAction` (`RETRY` | `CANCEL`), `approver`, `bookingId`, `bookingRef` (`"BK-" + bookingId`),
-`decision` (`{outcome, remarks}`, received by message), `outcome`, `notificationId`, `notifiedAt`.
+```json
+{ "requesterName": "Dr. Rao", "email": "rao@college.edu", "attendees": 40, "purpose": "Workshop",
+  "sessions": [ { "venue": "hall-a", "bookingDate": "2027-01-26", "startTime": "10:00", "endTime": "12:00" },
+                { "venue": "lab-1",  "bookingDate": "2027-01-26", "startTime": "14:00", "endTime": "16:00" } ] }
+```
 
-Outcomes: `APPROVED`, `REJECTED`, `EXPIRED`, `CONFLICT`, `INVALID_TIME`, `PAST_DATE`, `OVER_CAPACITY`, `SERVICE_UNAVAILABLE`.
+`venue` is `hall-a` | `hall-b` | `lab-1`; `bookingDate` is `yyyy-MM-dd`; times are `HH:00` between 08:00 and 18:00.
 
-Hall Administration receives (message variables): requester fields, `approver`, `bookingId`, `bookingRef`;
-produces `approved`, `remarks`, `decision`, `reminderSentAt`.
+**Main process variables** (root scope):
 
-## 4. BPMN collaboration (`hall-booking.bpmn`)
+| Variable | Set by | Shape |
+|---|---|---|
+| `sessions` | Prepare sessions (overwrites the input) | each session + `slot: {startHour, endHour, durationHours}` |
+| `validation` | Validate request (completion or BPMN error) | `{valid, reason, message, session, checkedOn}` |
+| `sessionChecks` | Check availability (output mapping) | per session `{venue, bookingDate, startTime, endTime, clash}` |
+| `conflictCheck` | Check availability (output mapping) | `{hasConflict, clashes}` |
+| `serviceError` | Service-down boundary (output mapping) or Set timeout error | text |
+| `serviceFixAction` | Resolve service issue | `RETRY` \| `CANCEL` |
+| `sessionApprovers` | Decide approver (MI output collection) | one role per session |
+| `approvers` | Plan approval chain | `distinct values(sessionApprovers)` |
+| `heldSlots` | Hold slot (MI output collection) | per session `{id, ref: "BK-<id>", venue, bookingDate, startTime, endTime}` |
+| `decisions` | Get approval (MI output collection) | one `{outcome, remarks, approver}` per approver asked; `null` for those never asked |
+| `decision` | Combine decisions | the first non-approved decision, or `{outcome: "APPROVED", approver, remarks}` |
+| `outcome` | various | `APPROVED`, `REJECTED`, `EXPIRED`, `CONFLICT`, `INVALID_TIME`, `PAST_DATE`, `OVER_CAPACITY`, `SERVICE_UNAVAILABLE` |
+| `notification` | Compose notification | `{to, subject, bookingRef, message, body}` |
+| `emailStatus`, `emailError` | Email requester (result) or Email failed boundary (output mapping) | `SENT` \| `FAILED`, error text |
+| `notificationId`, `notifiedAt` | Record notification | |
+
+Local (not visible at the root): `session` (MI input element), `existing` (per Check session), `approver` (per DMN
+evaluation and per call), `bookingId` (per Hold slot), `held` (per Confirm/Release), `loopCounter`.
+
+**Child process `hall-approval`** receives only what the Call Activity maps in (`propagateAllParentVariables=false`):
+`approver`, `approvalStep` (`=loopCounter`), `approvalSteps` (`=count(approvers)`), `requesterName`, `email`,
+`attendees`, `purpose`, `sessions`, `bookingRef` (`=string join(for h in heldSlots return h.ref, ", ")`).
+It produces `approved`, `remarks`, `reminderSentAt`, and `decision = {outcome, remarks, approver}`, of which only
+`decision` is mapped back (`propagateAllChildVariables=false`).
+
+## 4. BPMN
 
 | Element | Value |
 |---|---|
-| Collaboration | `Collaboration_HallBooking` |
-| Pool 1 | `Participant_BookingDesk` "Booking Desk" → process `hall-booking` "Seminar Hall and Lab Booking" |
-| Pool 2 | `Participant_HallAdmin` "Hall Administration" → process `hall-approval` "Hall Approval" |
-| Message flow | `MsgFlow_ApprovalRequest`: `Send_ApprovalRequest` → `MsgStart_ApprovalRequested` |
-| Message flow | `MsgFlow_ApprovalDecision`: `Send_Decision` → `Receive_Decision` |
-| Message | `Message_ApprovalRequest` name `booking-approval-request` (start event, no correlation key needed) |
-| Message | `Message_ApprovalDecision` name `booking-approval-decision`, correlation key `=requestId` |
-| Error | `Error_ServiceDown` code `BOOKING_SERVICE_DOWN` |
+| Error | `Error_ServiceDown` code `BOOKING_SERVICE_DOWN` (thrown by Check session's errorExpression) |
+| Error | `Error_InvalidRequest` code `INVALID_REQUEST` (thrown by the validate-booking worker) |
+| Error | `Error_EmailFailed` code `EMAIL_FAILED` (thrown by Email requester's errorExpression) |
 
-Zeebe does not execute message flows. The send tasks are job tasks of type `publish-message`; the worker publishes
-the message (`POST /v2/messages/publication`, TTL 1 h) and Zeebe delivers it to the waiting start event or receive task.
-
-### 4.1 Pool 1: Booking Desk (`hall-booking`)
+### 4.1 Main process `hall-booking` (`hall-booking.bpmn`)
 
 | ID | Type | Name | Configuration |
 |---|---|---|---|
 | `StartEvent_Requested` | Start event | Booking requested | form `booking-request-form` |
-| `Script_PrepareSlot` | Script (FEEL) | Prepare slot | result `slot` |
+| `Script_PrepareSlot` | Script (FEEL) | Prepare sessions | result `sessions` (adds `slot` to each) |
 | `Worker_ValidateRequest` | Service task (worker) | Validate request | type `validate-booking` |
-| `Gateway_Valid` | XOR | Request valid? | `Flow_Invalid` `=validation.valid = false` → `Gateway_Merge`; default `Flow_Valid` |
+| `Boundary_Invalid` | Error boundary | Invalid request | on `Worker_ValidateRequest`, `Error_InvalidRequest`; outputs `validation`, `outcome` → `Gateway_Merge` |
 | `Gateway_FetchRetry` | XOR merge | | joins `Flow_Valid` and `Flow_Retry` |
-| `Rest_FetchBookings` | REST connector | Fetch existing bookings | GET `/bookings`, result `={existing: response.body}`, errorExpression below |
-| `Boundary_ServiceDown` | Error boundary | Service down | on `Rest_FetchBookings`, error `Error_ServiceDown` |
+| `SubProcess_CheckAvailability` | Embedded sub-process | Check availability | inputs `sessionChecks=null`, `conflictCheck=null` (local); outputs both to the root |
+| `Start_Check`, `End_Check` | Start / end | | inside the sub-process |
+| `Rest_CheckSession` | REST connector, **parallel MI** | Check session | over `=sessions` as `session`; GET `/bookings?hall=…&day=…`; local `existing`; result `={existing: response.body}`; outputElement `{venue, bookingDate, startTime, endTime, clash}` → `sessionChecks`; read timeout 60 s; errorExpression below |
+| `Script_DetectConflict` | Script (FEEL) | Detect conflict | result `conflictCheck` (inside the sub-process) |
+| `Boundary_ServiceDown` | Error boundary | Service down | on the sub-process, `Error_ServiceDown`; output `serviceError` |
+| `Timer_CheckTimeout` | Timer boundary, **interrupting** | After 30 s | on the sub-process, `PT30S` → `Script_SetTimeoutError` |
+| `Script_SetTimeoutError` | Script (FEEL) | Set timeout error | text → `serviceError` |
+| `Gateway_ServiceIssue` | XOR merge | | joins service down and timeout |
 | `User_FixService` | Camunda user task | Resolve service issue | form `service-fix-form` |
 | `Gateway_FixAction` | XOR | Retry? | `Flow_Retry` `=serviceFixAction = "RETRY"` → `Gateway_FetchRetry`; default `Flow_Cancel` |
 | `Script_SetServiceError` | Script (FEEL) | Set service error | `="SERVICE_UNAVAILABLE"` → `outcome` |
-| `Script_DetectConflict` | Script (FEEL) | Detect conflict | result `conflictCheck` |
-| `Gateway_SlotOk` | XOR | Slot available? | `Flow_SlotTaken` `=conflictCheck.hasConflict = true`; default `Flow_SlotFree` |
+| `Gateway_SlotOk` | XOR | All sessions free? | `Flow_SlotTaken` `=conflictCheck.hasConflict = true`; default `Flow_SlotFree` |
 | `Script_SetReason` | Script (FEEL) | Set rejection reason | `="CONFLICT"` → `outcome` |
-| `Dmn_DecideApprover` | Business rule | Decide approver | decision `decide-approver`, result `approver` |
-| `Rest_HoldSlot` | REST connector | Hold slot | POST `/bookings` (status PENDING), result `={bookingId: response.body.id, bookingRef: "BK-" + string(response.body.id)}` |
-| `Send_ApprovalRequest` | Send task (worker) | Send approval request | type `publish-message`, header `messageName=booking-approval-request`, inputs `correlationKey=requestId`, `messageVariables` (requester fields, approver, bookingId, bookingRef, requestId) |
-| `Receive_Decision` | Receive task | Wait for decision | message `Message_ApprovalDecision` |
+| `Dmn_DecideApprover` | Business rule, **parallel MI** | Decide approver | over `=sessions` as `session`; inputs `venue=session.venue`, `slot=session.slot`, `approver=null`; decision `decide-approver` → `approver`; outputElement `=approver` → `sessionApprovers` |
+| `Script_PlanApprovals` | Script (FEEL) | Plan approval chain | `=distinct values(sessionApprovers)` → `approvers` |
+| `Rest_HoldSlot` | REST connector, **parallel MI** | Hold slot | over `=sessions`; POST `/bookings` (status PENDING); local `bookingId`; outputElement `{id, ref, venue, bookingDate, startTime, endTime}` → `heldSlots` |
+| `CallActivity_Approval` | **Call Activity**, **sequential MI** | Get approval | calls `hall-approval`; over `=approvers` as `approver`; mappings in §3; outputElement `=decision` → `decisions`; completionCondition `=decision != null and decision.outcome != "APPROVED"` |
+| `Script_SummarizeDecision` | Script (FEEL) | Combine decisions | result `decision` (§4.3) |
 | `Gateway_Decision` | XOR | Decision? | `Flow_Approved` `=decision.outcome = "APPROVED"`, `Flow_Expired` `=decision.outcome = "EXPIRED"`, default `Flow_Rejected` |
-| `Rest_ConfirmSlot` | REST connector | Confirm slot | PATCH `/bookings/{id}`, result `={outcome: "APPROVED"}` |
-| `Rest_ReleaseRejected` | REST connector | Release slot (rejected) | DELETE, result `={outcome: "REJECTED"}` |
-| `Rest_ReleaseExpired` | REST connector | Release slot (expired) | DELETE, result `={outcome: "EXPIRED"}` |
+| `Rest_ConfirmSlot` | REST connector, **parallel MI** | Confirm slot | over `=heldSlots` as `held`; PATCH `/bookings/{held.id}`; result `={outcome: "APPROVED"}` |
+| `Rest_ReleaseRejected` | REST connector, **parallel MI** | Release slot (rejected) | over `=heldSlots`; DELETE; result `={outcome: "REJECTED"}` |
+| `Rest_ReleaseExpired` | REST connector, **parallel MI** | Release slot (expired) | over `=heldSlots`; DELETE; result `={outcome: "EXPIRED"}` |
 | `Gateway_Merge` | XOR merge | | 6 incoming: invalid, conflict, service error, confirm, reject, expire |
-| `Worker_Notify` | Service task (worker) | Notify requester | type `send-notification`, inputs `to`, `subject`, `message` (FEEL below) |
+| `Script_ComposeNotification` | Script (FEEL) | Compose notification | result `notification` (§4.3) |
+| `Email_NotifyRequester` | **Email connector** (SMTP) | Email requester | template `io.camunda.connectors.email.v1` v3, type `io.camunda:email:1`; host, port, username, password, from = `{{secrets.SMTP_HOST}}`, `{{secrets.SMTP_PORT}}`, `{{secrets.SMTP_USERNAME}}`, `{{secrets.SMTP_PASSWORD}}`, `{{secrets.MAIL_FROM}}`; to/subject/body from `notification`; result `={emailStatus: "SENT"}`; errorExpression → `EMAIL_FAILED` |
+| `Boundary_EmailFailed` | Error boundary | Email failed | on `Email_NotifyRequester`, `Error_EmailFailed`; outputs `emailError`, `emailStatus="FAILED"` |
+| `Gateway_NotifyMerge` | XOR merge | | joins email sent and email failed |
+| `Worker_Notify` | Service task (worker) | Record notification | type `record-notification`, inputs `to`, `subject`, `message`, `bookingRef` (from `notification`) |
 | `EndEvent_Done` | End event | Done | |
 
-### 4.2 Pool 2: Hall Administration (`hall-approval`)
+### 4.2 Child process `hall-approval` (`hall-approval.bpmn`)
 
 | ID | Type | Name | Configuration |
 |---|---|---|---|
-| `MsgStart_ApprovalRequested` | Message start | Approval request received | `Message_ApprovalRequest` |
+| `StartEvent_Approval` | Start event | Approval requested | (started by the Call Activity) |
 | `User_Approval` | Camunda user task | Review booking | form `approval-form` |
 | `Timer_Reminder` | Boundary timer, **non-interrupting** | After 1 min | `PT1M` → `Worker_Reminder` → `End_Reminded` |
 | `Timer_Timeout` | Boundary timer, **interrupting** | After 2 min | `PT2M` → `Script_MarkExpired` |
 | `Worker_Reminder` | Service task (worker) | Remind approver | type `send-reminder`, input `approverRole=approver` |
-| `Script_RecordDecision` | Script (FEEL) | Record decision | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks}` → `decision` |
-| `Script_MarkExpired` | Script (FEEL) | Mark as expired | `={outcome: "EXPIRED", remarks: "Not reviewed within 2 minutes"}` → `decision` |
+| `Script_RecordDecision` | Script (FEEL) | Record decision | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks, approver: approver}` → `decision` |
+| `Script_MarkExpired` | Script (FEEL) | Mark as expired | `={outcome: "EXPIRED", remarks: "Not reviewed within 2 minutes", approver: approver}` → `decision` |
 | `Gateway_DecisionMerge` | XOR merge | | |
-| `Send_Decision` | Send task (worker) | Send decision | type `publish-message`, header `messageName=booking-approval-decision`, inputs `correlationKey=requestId`, `messageVariables={decision: decision}` |
-| `End_Decided` | End event | Decision sent | |
+| `End_Decided` | End event | Decision made | |
 
 ### 4.3 Expressions
 
-`Script_PrepareSlot`: `={startHour: number(substring(startTime, 1, 2)), endHour: number(substring(endTime, 1, 2)), durationHours: endHour - startHour}` (written out in full in the BPMN).
+`Script_PrepareSlot`: `=for s in sessions return context put(s, "slot", {startHour: number(substring(s.startTime, 1, 2)), endHour: …, durationHours: …})`.
 
-`Script_DetectConflict`:
-`={ hasConflict: count(existing[item.hall = venue and item.day = bookingDate and item.startHour < slot.endHour and item.endHour > slot.startHour]) > 0 }`
+`Rest_CheckSession` URL: `="{{secrets.BOOKING_API_URL}}/bookings?hall=" + session.venue + "&day=" + session.bookingDate`;
+outputElement clash test: `count(existing[item.startHour < session.slot.endHour and item.endHour > session.slot.startHour]) > 0`.
 
-`Rest_FetchBookings` errorExpression (turns any connector failure into the BPMN error):
+`Rest_CheckSession` errorExpression (turns any connector failure into the BPMN error):
 `=if error != null then bpmnError("BOOKING_SERVICE_DOWN", "Booking service unreachable", {serviceError: error.message}) else null`
 
-`Worker_Notify` message: one `if … else if …` per outcome, including `decision.remarks` for REJECTED and
-`validation.capacity` for OVER_CAPACITY.
+`Script_DetectConflict`: `={hasConflict: some c in sessionChecks satisfies c.clash, clashes: sessionChecks[item.clash]}`.
 
-### 4.4 External worker job types (`worker/worker.js`)
+`Script_SummarizeDecision`:
+`=if every d in decisions satisfies d != null and d.outcome = "APPROVED" then {outcome: "APPROVED", approver: string join(approvers, ", "), remarks: …} else (decisions[item != null and item.outcome != "APPROVED"])[1]`.
+
+`Script_ComposeNotification`: a context `{to: email, subject: "Hall booking " + outcome, bookingRef: …, message: …, body: …}`.
+`message` is one `if … else if …` per outcome: APPROVED lists all sessions; REJECTED/EXPIRED name `decision.approver`
+(plus remarks); CONFLICT lists `conflictCheck.clashes`; the validation outcomes use `validation.message`. `body` reuses the
+earlier entries of the same context: `"Dear " + requesterName + ",\n\n" + message + (booking reference) + "\n\nHall Booking Office"`.
+
+`Email_NotifyRequester` errorExpression:
+`=if error != null then bpmnError("EMAIL_FAILED", "Email could not be sent", {emailError: error.message}) else null`.
+The connector masks secret values in error texts (`host, port: ***, ***`), so they never reach Operate or the notification record.
+
+Why the completion condition tests `decision` and not `decisions`: when an inner instance completes, the output
+collection is not yet updated when the condition is evaluated, so `decision` is declared local (`=null` input) and
+tested directly. Verified on 8.8.32: with `some d in decisions …` all approvers were asked.
+
+### 4.4 Job worker types (`backend-springboot`, class `BookingWorkers`)
 
 | Type | Used by | Does | Returns |
 |---|---|---|---|
-| `validate-booking` | `Worker_ValidateRequest` | `durationHours > 0`, `bookingDate >= today`, `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60) | `validation`, `requestId` (= process instance key, the messages' correlation key), plus `outcome` when invalid |
-| `publish-message` | `Send_ApprovalRequest`, `Send_Decision` | `POST /v2/messages/publication` with header `messageName`, input `correlationKey`, input `messageVariables` | nothing |
+| `validate-booking` | `Worker_ValidateRequest` | per session: `durationHours > 0`, `bookingDate >= today`, `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60); no two sessions of the request overlap | `validation`, or **`ZeebeBpmnError`** `INVALID_REQUEST` with variables `outcome`, `validation`; records the request in `booking_request` |
 | `send-reminder` | `Worker_Reminder` | writes `outbox/*_REMINDER_*.txt`, logs | `reminderSentAt` |
-| `send-notification` | `Worker_Notify` | writes `outbox/*_<OUTCOME>_*.txt`, `POST /notifications` (best effort) | `notificationId`, `notifiedAt` |
+| `record-notification` | `Worker_Notify` | writes `outbox/*_<OUTCOME>_*.txt`, `POST /notifications` with `emailStatus`/`emailError` (best effort) | `notificationId`, `notifiedAt` |
 
-Activation: `POST /v2/jobs/activation` (long poll 10 s, job timeout 10 s), completion `POST /v2/jobs/{key}/completion`,
-failure `POST /v2/jobs/{key}/failure` with retries − 1 and 5 s backoff.
+Spring `@JobWorker(type = ...)` methods with `@VariablesAsType` records (only the named variables are fetched); the SDK
+activates jobs over gRPC (job timeout 30 s, `camunda.client.worker.defaults.timeout`), completes them with the returned
+record, reports a thrown `ZeebeBpmnError` as a BPMN error and any other exception as a failure (retries − 1).
+`ZeebeBpmnError` is the 8.8 SDK's deprecated compatibility subclass of `io.camunda.client.exception.BpmnError`.
 
 ### 4.5 Connector notes
 
 REST Outbound Connector template `io.camunda.connectors.HttpJson.v2` version **12** (newest for 8.8; v13 needs 8.9),
-task type `io.camunda:http-json:1`, retries 3, `retryBackoff=PT0S`, auth `noAuth`.
+task type `io.camunda:http-json:1`, retries 3, auth `noAuth`. Check session: `retryBackoff=PT0S` (the errorExpression
+turns the first failure into the BPMN error anyway), read timeout **60 s** so a slow service meets the 30 s timer
+first. Hold / Confirm / Release: `retryBackoff=PT10S`, so a short outage heals itself instead of becoming an incident.
+
+Email Outbound Connector template `io.camunda.connectors.email.v1` version **3** (newest for 8.8; v4 needs 8.9), task type
+`io.camunda:email:1`, `protocol=smtp`, action `sendEmailSmtp`, auth `simple` (the only option, so the mail server always
+gets a login), `smtpCryptographicProtocol=NONE` (local MailDev; a real server would use TLS on 587), content type PLAIN.
+
+**Secrets.** The connectors runtime of Camunda 8 Run reads `{{secrets.NAME}}` from its environment variables.
+`start-camunda.cmd` sets `BOOKING_API_URL` and calls `secrets.cmd` (copied from `secrets.example.cmd` on the first start,
+git-ignored) for the SMTP values; `start-mail.cmd` starts MailDev with the same login, so the two always match. Changing a
+secret needs a Camunda restart (the runtime reads the environment once). Scripts must call `secrets.cmd` by full path
+(`%~dp0`): with `NoDefaultCurrentDirectoryInExePath` set, `call secrets.cmd` fails.
 
 ## 5. DMN: `decide-approver`
 
-Hit policy **FIRST**, one output column.
+Hit policy **FIRST**, one output column. Evaluated once per session (parallel MI), with `venue` and `slot` mapped from the session.
 
 | `venue` | `slot.durationHours` | `attendees` | `approver` |
 |---|---|---|---|
@@ -226,22 +298,26 @@ Hit policy **FIRST**, one output column.
 
 ## 6. Forms (schemaVersion 19)
 
-- **`booking-request-form`**: name, email (validated), venue select with capacity in the label, date, start/end selects 08:00–18:00, attendees (min 1), purpose.
-- **`approval-form`**: summary text with `{{bookingRef}}`, `{{approver}}` and the request; checkbox `approved` (default false); textarea `remarks` (default "").
-- **`service-fix-form`**: text with `{{serviceError}}` and the request; radio `serviceFixAction` (`RETRY` default, `CANCEL`).
+- **`booking-request-form`**: name, email (validated), attendees (min 1), **dynamic list `sessions`** (venue select with
+  capacity in the label, date, start/end selects 08:00–18:00; add/remove rows), purpose.
+- **`approval-form`**: `{{bookingRef}}`, `{{approver}}`, step `{{approvalStep}} of {{approvalSteps}}`, the request and a
+  `{{#loop sessions}}` list; checkbox `approved` (default false); textarea `remarks` (default "").
+- **`service-fix-form`**: `{{serviceError}}` and a `{{#loop sessions}}` list; radio `serviceFixAction` (`RETRY` default, `CANCEL`).
 
 ## 7. Manual steps
 
-1. `start-mock.cmd`, `start-camunda.cmd`, `start-worker.cmd` (three windows, keep open).
-2. `deploy.cmd` (or Modeler: DMN and forms first, then the BPMN).
-3. `reset-mock.cmd` before a demo or test run.
-4. Tasklist → Processes → "Seminar Hall and Lab Booking". Approval tasks appear as *Review booking* (process *Hall Approval*).
+1. `start-mail.cmd`, `start-camunda.cmd`, `start-backend.cmd` (or `start-all.cmd`). The backend deploys the models at startup.
+2. `deploy.cmd` (or Modeler: DMN and forms first, then `hall-approval.bpmn`, then `hall-booking.bpmn`).
+3. `reset-data.cmd` before a demo or test run.
+4. Tasklist → Processes → "Seminar Hall and Lab Booking". Approval tasks appear as *Review booking* (process *Hall Approval*), one approver at a time.
 
 ## 8. Test cases
 
 Automated by `scripts/run-scenarios.ps1` (reset the mock first). Seed: hall-a 11 Jan 10–12, hall-b 11 Jan 14–16, lab-1 12 Jan 9–13 (2027).
+"Approver" is the approval chain (`approvers`). Every case must also end with `emailStatus = SENT` and its email in the
+MailDev inbox (`GET /api/email`). **All dates are fixed: from 12 Jan 2027 the tests dated 11 Jan return `PAST_DATE`.**
 
-| # | Group | Input | Expected | Result 2026-10-21 |
+| # | Group | Input | Expected | Result 2026-11-08 |
 |---|---|---|---|---|
 | A | Main path | hall-a, 12 Jan, 14–16, 50; approve | `admin-office`, `APPROVED` | PASS |
 | B | Main path | hall-a, 11 Jan, 11–13 | `CONFLICT` | PASS |
@@ -261,27 +337,38 @@ Automated by `scripts/run-scenarios.ps1` (reset the mock first). Seed: hall-a 11
 | P | DMN | hall-b, 8 h, 150 people; approve | `dean` (FIRST) | PASS |
 | Q1/Q2 | Slot hold | Q1 pending, Q2 same slot | Q2 `CONFLICT`, Q1 then `APPROVED` | PASS |
 | R | Slot hold | rebook C's slot after it expired; approve | `APPROVED` | PASS |
+| MS1 | Multi-session | hall-a + lab-1, 26 Jan; both approve | chain `admin-office,lab-incharge`, `APPROVED`, 2 approval instances, 2 slots | PASS |
+| MS2 | Multi-session | hall-b 6 h + hall-a, 27 Jan; approve, reject | chain `dean,admin-office`, `REJECTED`, 2 instances | PASS |
+| MS3 | Multi-session | hall-b 6 h + lab-1, 28 Jan; first rejects | `REJECTED`, **1** instance (chain stops), both slots released | PASS |
+| MS4 | Multi-session | lab-1 29 Jan + hall-a 11 Jan 11–13 | `CONFLICT`, no approval | PASS |
+| MS5 | Multi-session | hall-a 29 Jan 10–12 and 11–13 | `INVALID_TIME` (sessions overlap, BPMN error) | PASS |
+| MS6 | Multi-session | hall-a 1 Feb + hall-a 2 Feb; approve | one approver (`distinct values`), `APPROVED`, 2 slots | PASS |
 
-Manual (need a window closed and reopened):
+Manual (need a window closed, slowed or reopened):
 
-| # | Steps | Expected | Result 2026-10-21 |
+| # | Steps | Expected | Result |
 |---|---|---|---|
-| S1 | Close mock API, start a booking, restart mock, choose **Retry**, reject | *Resolve service issue* task with `serviceError`; after retry continues; `REJECTED` with remarks in the email | PASS |
-| S2 | Close mock API, start a booking, choose **Cancel** | `SERVICE_UNAVAILABLE`, email saved in outbox although the mock is down | PASS |
-| W | Close the worker, start a booking, restart the worker | Booking waits at *Validate request* (no incident), continues after restart | PASS |
+| S1 | Register mode DOWN (`POST /api/demo/register-mode`), start a booking, mode UP, choose **Retry**, reject | *Service down* error boundary; *Resolve service issue* says "answered with error 503"; Retry checks again; `REJECTED` | PASS 2026-11-09 |
+| S2 | Register mode DOWN, start a booking, choose **Cancel** | `SERVICE_UNAVAILABLE`, requester emailed | PASS 2026-10-21 (old model; T1 below also ends with Cancel) |
+| T1 | Register mode SLOW (every call takes 40 s), start a booking, mode UP, choose **Cancel** | Timer boundary interrupts *Check availability* after 30 s, *Resolve service issue* says "did not answer within 30 seconds"; `SERVICE_UNAVAILABLE` | PASS 2026-11-09 |
+| W | Close the backend (job workers), start a booking in Tasklist, restart the backend | Booking waits at *Validate request* (no incident), continues after restart | PASS 2026-10-21 with the Node worker; not yet re-run with the backend |
+| E1 | Close the mail server, start a booking (e.g. a conflict), restart the mail server | *Email failed* boundary: booking completes, `emailStatus = FAILED`, `emailError` set (secrets masked), notification recorded as not delivered | PASS 2026-11-08 |
 
 ## 9. Acceptance checklist
 
-- [x] Collaboration with two executable pools and two message flows, full DI
+- [x] Main process and reusable child process, both with full DI; Call Activity with explicit input/output mappings
+- [x] Parallel multi-instance (check, decide, hold, confirm, release) and sequential multi-instance (approval chain with completion condition)
+- [x] Embedded sub-process with error boundary and timer boundary; error boundary on the worker task (BPMN error from a job worker)
+- [x] Interrupting and non-interrupting timers on `User_Approval`
 - [x] All gateways have default flows; conditions as in section 4
-- [x] Interrupting and non-interrupting timers on `User_Approval`; error boundary on `Rest_FetchBookings`
-- [x] External worker handles all four job types; REST connectors handle all booking-database calls
-- [x] No Java, no `pom.xml`
-- [x] Deployed to local Camunda 8 Run (hall-booking v2, hall-approval v1)
-- [x] All automated test cases pass (section 8): 19 of 19 on 2026-10-21, plus the 3 manual cases
+- [x] REST connectors handle all booking-register calls, URL from the secret `BOOKING_API_URL`
+- [x] Spring Boot backend: REST controllers, JPA (H2 / PostgreSQL), typed `@JobWorker`s with `ZeebeBpmnError`, Camunda Java client; 15 unit tests
+- [x] Email connector emails the requester; SMTP host, port, login and sender are secrets from git-ignored `secrets.cmd`; failures go to an error boundary
+- [x] Deployed to local Camunda 8 Run (hall-booking v8, hall-approval v7)
+- [x] 25 of 25 automated tests pass (2026-11-08), plus manual T1
 
-## 10. Next steps
+## 10. Next steps (course guidelines, Milestone 2 by 13 Nov 2026)
 
-- Assign `User_Approval` to real candidate groups from `approver` (Identity groups).
-- Email connector (SendGrid/SMTP) instead of the outbox.
-- Second DMN for venue capacities (instead of the constant in the worker).
+- React (Vite + Tailwind) frontend: session list builder, custom Tasklist inbox, live status tracker (port from `app/public`), calling the backend's `/api`.
+- Docker: Dockerfiles + root `docker-compose.yml`; repository layout `bpmn-models/`, `backend-springboot/`, `frontend-react/`.
+- Make test dates relative to today (they expire on 12 Jan 2027).

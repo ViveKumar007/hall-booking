@@ -1,8 +1,9 @@
 // External job worker for the hall booking process.
 //
 // Camunda does not run these tasks itself. It creates a "job" for each one, and this program asks
-// Camunda for jobs of the four types below (POST /v2/jobs/activation), does the work, and reports
-// back (POST /v2/jobs/{key}/completion, or /failure if something went wrong).
+// Camunda for jobs of the three types below (POST /v2/jobs/activation), does the work, and reports
+// back: /completion when done, /error for a business error the process handles (BPMN error),
+// /failure for a technical problem (Camunda retries, then raises an incident).
 //
 // No libraries needed: Node 18+ has fetch built in. Start it with scripts\start-worker.cmd.
 
@@ -24,72 +25,90 @@ const CAPACITY = { 'hall-a': 200, 'hall-b': 150, 'lab-1': 60 };
 
 const handlers = {
   'validate-booking': validateBooking,
-  'publish-message': publishMessage,
   'send-reminder': sendReminder,
-  'send-notification': sendNotification,
+  'record-notification': recordNotification,
 };
+
+// A business error: the worker reports it with POST /v2/jobs/{key}/error, and the process continues at the
+// matching error boundary event (here: Boundary_Invalid on Validate request) instead of raising an incident.
+class BpmnError extends Error {
+  constructor(code, message, variables = {}) { super(message); this.code = code; this.variables = variables; }
+}
 
 // ---------------------------------------------------------------- job handlers
 
-// Checks what FEEL can't easily check: times make sense, the date is not in the past, the venue is big enough.
-async function validateBooking(v, job) {
+const describe = (s) => `${s.venue} ${s.bookingDate} ${s.startTime}-${s.endTime}`;
+
+// Checks what FEEL can't easily check, for every session of the request: times make sense, the date is not
+// in the past, the venue is big enough, and no two sessions of the same request overlap each other.
+async function validateBooking(v) {
   const today = new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
-  const capacity = CAPACITY[v.venue] ?? null;
-  let reason = null;
-  if (!v.slot || !(v.slot.durationHours > 0)) reason = 'INVALID_TIME';
-  else if (!v.bookingDate || v.bookingDate < today) reason = 'PAST_DATE';
-  else if (capacity !== null && v.attendees > capacity) reason = 'OVER_CAPACITY';
+  const sessions = Array.isArray(v.sessions) ? v.sessions : [];
+  const many = sessions.length > 1;
+  const reject = (reason, message, session = null) => {
+    log('validate-booking', `${v.requesterName} | ${sessions.map(describe).join(' + ')} -> ${reason}: ${message}`);
+    throw new BpmnError('INVALID_REQUEST', message, {
+      outcome: reason,
+      validation: { valid: false, reason, message, session, checkedOn: today },
+    });
+  };
+  // "Session 2: the end time ..." for multi-session requests, "The end time ..." for a single one.
+  const say = (i, text) => (many ? `Session ${i + 1}: ${text}` : text.charAt(0).toUpperCase() + text.slice(1));
 
-  const validation = { valid: reason === null, reason, capacity, checkedOn: today };
-  // Unique id for this request, used as the correlation key of both messages between the pools.
-  // bookingRef ("BK-" + database id) can repeat after the booking database is reset; this can't.
-  const requestId = String(job.processInstanceKey);
-  log('validate-booking', `${v.requesterName} | ${v.venue} ${v.bookingDate} ${v.startTime}-${v.endTime}, ${v.attendees} people -> ${reason || 'VALID'}`);
-  return reason ? { validation, requestId, outcome: reason } : { validation, requestId };
-}
-
-// Used by both send tasks. The message name comes from the task header, the correlation key and
-// payload from the task's input mappings. Camunda delivers the message to whichever process is
-// waiting for it: the approval pool's message start event, or the booking pool's receive task.
-async function publishMessage(v, job) {
-  const name = job.customHeaders.messageName;
-  const correlationKey = String(v.correlationKey);
-  await api('POST', '/v2/messages/publication', {
-    name,
-    correlationKey,
-    timeToLive: 3600000, // keep it for 1 hour if nobody is waiting yet
-    variables: v.messageVariables || {},
+  if (!sessions.length) reject('INVALID_TIME', 'The request has no sessions.');
+  sessions.forEach((s, i) => {
+    const capacity = CAPACITY[s.venue];
+    if (!s.slot || !(s.slot.durationHours > 0)) reject('INVALID_TIME', say(i, 'the end time must be after the start time.'), i + 1);
+    if (!s.bookingDate || s.bookingDate < today) reject('PAST_DATE', say(i, `the booking date ${s.bookingDate} has already passed.`), i + 1);
+    if (capacity !== undefined && v.attendees > capacity) {
+      reject('OVER_CAPACITY', say(i, `${s.venue} holds at most ${capacity} people; you asked for ${v.attendees}.`), i + 1);
+    }
   });
-  log('publish-message', `${name} (key ${correlationKey})`);
-  return {};
+  for (let i = 0; i < sessions.length; i++) {
+    for (let j = i + 1; j < sessions.length; j++) {
+      const a = sessions[i], b = sessions[j];
+      if (a.venue === b.venue && a.bookingDate === b.bookingDate && a.slot.startHour < b.slot.endHour && a.slot.endHour > b.slot.startHour) {
+        reject('INVALID_TIME', `Sessions ${i + 1} and ${j + 1} overlap (${describe(a)} and ${describe(b)}).`, j + 1);
+      }
+    }
+  }
+
+  log('validate-booking', `${v.requesterName} | ${sessions.map(describe).join(' + ')}, ${v.attendees} people -> VALID`);
+  return { validation: { valid: true, reason: null, message: null, sessions: sessions.length, checkedOn: today } };
 }
 
 async function sendReminder(v) {
+  const sessions = (v.sessions || []).map((s) => `- ${describe(s)}`).join('\n');
   const text = `To: ${v.approverRole}\nSubject: Reminder: booking ${v.bookingRef} is waiting for your review\n\n` +
-    `${v.requesterName} asked for ${v.venue} on ${v.bookingDate}, ${v.startTime}-${v.endTime}, for ${v.attendees} people.\n` +
-    `Please approve or reject it in Tasklist. It expires automatically after 2 minutes.\n`;
+    `${v.requesterName} asked for these sessions, for ${v.attendees} people:\n${sessions}\n` +
+    `Please approve or reject it in the Hall Booking inbox. It expires automatically after 2 minutes.\n`;
   const file = writeOutbox('REMINDER', v.approverRole, text);
   log('send-reminder', `reminded ${v.approverRole} about ${v.bookingRef} -> outbox/${file}`);
   return { reminderSentAt: new Date().toISOString() };
 }
 
-// "Sends" the email: saves it in outbox/ and records it in the mock API's /notifications list.
-// The mock call is best effort, so the requester is still notified when the booking service is down.
-async function sendNotification(v) {
-  const text = `To: ${v.to}\nSubject: ${v.subject}\n\n${v.message}\n`;
+// Records the notification after the Email connector has tried to send it: a copy in outbox/ and an entry in
+// the mock API's /notifications list, including whether the email went out (emailStatus SENT or FAILED).
+// The mock call is best effort, so the record is kept in outbox/ even when the booking service is down.
+async function recordNotification(v) {
+  const emailStatus = v.emailStatus || 'UNKNOWN';
+  const text = `To: ${v.to}\nSubject: ${v.subject}\nEmail: ${emailStatus}${v.emailError ? ` (${v.emailError})` : ''}\n\n${v.message}\n`;
   const file = writeOutbox(v.outcome, v.to, text);
   let notificationId = null;
   try {
     const res = await fetch(`${MOCK}/notifications`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: v.to, subject: v.subject, message: v.message, bookingRef: v.bookingRef ?? null, sentAt: new Date().toISOString() }),
+      body: JSON.stringify({
+        to: v.to, subject: v.subject, message: v.message, bookingRef: v.bookingRef ?? null,
+        emailStatus, emailError: v.emailError ?? null, sentAt: new Date().toISOString(),
+      }),
     });
     if (res.ok) notificationId = (await res.json()).id;
   } catch (e) {
-    log('send-notification', `could not record in mock API (${e.message}); email saved anyway`);
+    log('record-notification', `could not record in mock API (${e.message}); kept in outbox anyway`);
   }
-  log('send-notification', `${v.subject} -> ${v.to} | outbox/${file}`);
+  log('record-notification', `${v.subject} -> ${v.to} | email ${emailStatus} | outbox/${file}`);
   return { notificationId, notifiedAt: new Date().toISOString() };
 }
 
@@ -131,6 +150,13 @@ async function work(type, handler) {
         stats.handled[type] = (stats.handled[type] || 0) + 1;
         stats.lastJobAt = new Date().toISOString();
       } catch (e) {
+        if (e instanceof BpmnError) {
+          await api('POST', `/v2/jobs/${job.jobKey}/error`, { errorCode: e.code, errorMessage: e.message, variables: e.variables })
+            .catch((err) => log(type, `could not report BPMN error for job ${job.jobKey}: ${err.message}`));
+          stats.handled[type] = (stats.handled[type] || 0) + 1;
+          stats.lastJobAt = new Date().toISOString();
+          continue;
+        }
         const retries = Math.max((job.retries || 1) - 1, 0);
         log(type, `FAILED job ${job.jobKey}: ${e.message} (retries left: ${retries})`);
         await api('POST', `/v2/jobs/${job.jobKey}/failure`, { retries, errorMessage: e.message, retryBackOff: 5000 }).catch(() => {});

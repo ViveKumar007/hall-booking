@@ -25,8 +25,8 @@ export default async function inbox(el, ctx) {
     a.dataset.created = t.created;
     a.innerHTML = `
       <div>
-        <div class="eyebrow">${esc(t.bookingRef || '')}${role === 'all' ? ` · for ${esc(ctx.roleName(t.approver))}` : ''}</div>
-        <h3>${esc(ctx.venueName(t.venue))} · ${esc(fmtDay(t.bookingDate))} · ${esc(t.startTime)}–${esc(t.endTime)}</h3>
+        <div class="eyebrow">${esc(t.bookingRef || '')}${role === 'all' ? ` · for ${esc(ctx.roleName(t.approver))}` : ''}${t.approvalSteps > 1 ? ` · approval ${esc(t.approvalStep)} of ${esc(t.approvalSteps)}` : ''}</div>
+        <h3>${esc(ctx.venueName(t.venue))} · ${esc(fmtDay(t.bookingDate))} · ${esc(t.startTime)}–${esc(t.endTime)}${t.sessions && t.sessions.length > 1 ? ` <span class="muted small">+${t.sessions.length - 1} more</span>` : ''}</h3>
         <div class="who">${esc(t.requesterName)} · ${esc(t.email)} · <b>${esc(t.attendees)}</b> people</div>
         ${t.purpose ? `<p class="small muted" style="margin:6px 0 0">${esc(t.purpose)}</p>` : ''}
         ${t.bookingKey ? `<p class="small" style="margin:6px 0 0"><a href="#/requests/${t.bookingKey}">Follow this request</a></p>` : ''}

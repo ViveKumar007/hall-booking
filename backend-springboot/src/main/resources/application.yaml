@@ -1,0 +1,55 @@
+# Hall Booking backend. Every value can be overridden with an environment variable
+# (e.g. SERVER_PORT, CAMUNDA_CLIENT_GRPCADDRESS, APP_MODELSDIR) - the Docker setup does that.
+server:
+  port: 8090
+
+spring:
+  application:
+    name: hall-booking-backend
+  # H2 in a file under backend-springboot/data, so bookings survive a restart. Profile "postgres" switches to PostgreSQL.
+  datasource:
+    url: jdbc:h2:file:./data/hallbooking;AUTO_SERVER=TRUE
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  # The current frontend (plain HTML/CSS/JS) is served from the repository until the React app replaces it.
+  web:
+    resources:
+      static-locations: file:../hall-booking/app/public/
+      cache:
+        period: 0
+
+# Camunda 8 Run 8.8 on this machine: no authentication.
+camunda:
+  client:
+    mode: self-managed
+    grpc-address: http://localhost:26500
+    rest-address: http://localhost:8080
+    auth:
+      method: none
+    worker:
+      defaults:
+        # A job stays locked to this application for 30 s; if it crashes, Camunda hands the job out again after that.
+        timeout: PT30S
+
+logging:
+  # Also written to a file (git-ignored), so a problem can be read after the window is closed.
+  file:
+    name: ./logs/hall-booking-backend.log
+
+app:
+  models-dir: ../hall-booking
+  deploy-models: true
+  # One-time import of the old json-server data when the register is still empty.
+  import-file: ../hall-booking/mock/db.json
+  approval-minutes: 2
+  smtp-host: ${SMTP_HOST:127.0.0.1}
+  smtp-port: ${SMTP_PORT:1025}
+  camunda-web-url: http://localhost:8080
