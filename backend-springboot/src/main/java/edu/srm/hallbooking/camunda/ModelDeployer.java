@@ -29,6 +29,7 @@ public class ModelDeployer implements ApplicationRunner {
       "booking-request-form.form",
       "approval-form.form",
       "service-fix-form.form",
+      "send-email.bpmn",
       "hall-approval.bpmn",
       "hall-booking.bpmn");
 

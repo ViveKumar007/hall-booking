@@ -2,6 +2,13 @@
 # (e.g. SERVER_PORT, CAMUNDA_CLIENT_GRPCADDRESS, APP_MODELSDIR) - the Docker setup does that.
 server:
   port: 8090
+  servlet:
+    session:
+      # The login lives in this cookie: not readable by scripts, not sent along with requests from other sites.
+      cookie:
+        http-only: true
+        same-site: lax
+      timeout: 8h
 
 spring:
   application:
@@ -19,12 +26,23 @@ spring:
     console:
       enabled: true
       path: /h2-console
-  # The current frontend (plain HTML/CSS/JS) is served from the repository until the React app replaces it.
+  # The React frontend's production build (frontend-react/dist, made by scripts/build-frontend.cmd). In Docker, nginx
+  # serves it instead; during development "npm run dev" serves it on :5173 and forwards /api here.
   web:
     resources:
-      static-locations: file:../hall-booking/app/public/
+      static-locations: file:../frontend-react/dist/
       cache:
         period: 0
+  # Sign in with Google (OpenID Connect). Client ID and secret come from secrets.cmd, never from this file.
+  # Redirect URI registered at Google: http://localhost:8090/login/oauth2/code/google
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID:not-configured}
+            client-secret: ${GOOGLE_CLIENT_SECRET:not-configured}
+            scope: openid, email, profile
 
 # Camunda 8 Run 8.8 on this machine: no authentication.
 camunda:
@@ -49,7 +67,18 @@ app:
   deploy-models: true
   # One-time import of the old json-server data when the register is still empty.
   import-file: ../hall-booking/mock/db.json
-  approval-minutes: 2
+  # How long an approver has, and when the reminder goes out (ISO 8601: P1D = 1 day, PT1H = 1 hour). Sent with every
+  # booking as approvalTimes. For demos and the automated tests: APPROVAL_TIMEOUT=PT2M, APPROVAL_REMINDER=PT1M.
+  approval-timeout: ${APPROVAL_TIMEOUT:P1D}
+  approval-reminder: ${APPROVAL_REMINDER:PT1H}
   smtp-host: ${SMTP_HOST:127.0.0.1}
   smtp-port: ${SMTP_PORT:1025}
   camunda-web-url: http://localhost:8080
+  # Roles by Google account, "email=role+role;email=role" (from secrets.cmd). Everyone else is a requester.
+  accounts: ${APP_ACCOUNTS:}
+  # Key the REST connectors send as X-Register-Key; when empty, the register is open (only for local tests).
+  register-key: ${REGISTER_API_KEY:}
+  # Test-only login without Google (POST /api/auth/dev-login). Off unless APP_DEVLOGIN_ENABLED=true.
+  dev-login-enabled: ${APP_DEVLOGIN_ENABLED:false}
+  # Address of the app, for the links in the update emails.
+  url: ${APP_URL:http://localhost:8090}

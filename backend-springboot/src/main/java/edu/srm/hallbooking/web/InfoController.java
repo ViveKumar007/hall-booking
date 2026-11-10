@@ -6,6 +6,7 @@ import edu.srm.hallbooking.domain.Notification;
 import edu.srm.hallbooking.domain.RegisterSlot;
 import edu.srm.hallbooking.repository.NotificationRepository;
 import edu.srm.hallbooking.repository.RegisterSlotRepository;
+import edu.srm.hallbooking.service.ApprovalTimes;
 import edu.srm.hallbooking.service.HealthService;
 import java.time.LocalDate;
 import java.util.List;
@@ -37,7 +38,7 @@ public class InfoController {
   @GetMapping("/meta")
   public Map<String, Object> meta() {
     return Map.of("venues", Catalog.VENUES, "roles", Catalog.ROLES, "outcomes", Catalog.OUTCOMES,
-        "approvalMinutes", props.approvalMinutes());
+        "approval", ApprovalTimes.variable(props.approvalTimeout(), props.approvalReminder()));
   }
 
   @GetMapping("/health")

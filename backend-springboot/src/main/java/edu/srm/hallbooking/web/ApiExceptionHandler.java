@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * Turns errors into {error, service, fields} with a fitting status. The frontend relies on two of them: 404 while
  * a just-started request is not yet searchable (it retries), and 404/409 when a task was already completed.
  */
-@RestControllerAdvice(basePackages = "edu.srm.hallbooking.web")
+@RestControllerAdvice(basePackages = {"edu.srm.hallbooking.web", "edu.srm.hallbooking.security"})
 public class ApiExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);

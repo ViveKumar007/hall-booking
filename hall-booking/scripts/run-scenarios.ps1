@@ -19,9 +19,23 @@ param(
   [string]$Camunda = 'http://localhost:8080',
   [string]$Register = 'http://127.0.0.1:8090/register',
   [string]$Mail = 'http://127.0.0.1:1080',
+  [string]$RegisterKey = $env:REGISTER_API_KEY,
   [switch]$SkipTimer
 )
 $ErrorActionPreference = 'Stop'
+
+# The booking register only answers callers with its shared key (as the REST connectors send it), from secrets.cmd.
+if (-not $RegisterKey) {
+  $line = Get-Content (Join-Path $PSScriptRoot 'secrets.cmd') -ErrorAction SilentlyContinue | Where-Object { $_ -match '^set "REGISTER_API_KEY=(.*)"$' } | Select-Object -First 1
+  if ($line -match '^set "REGISTER_API_KEY=(.*)"$') { $RegisterKey = $Matches[1] }
+}
+$RegisterHeaders = @{ 'X-Register-Key' = $RegisterKey }
+
+# A run sends about 75 emails (to example.com test addresses and to the approver accounts). Only into MailDev.
+$smtpLine = Get-Content (Join-Path $PSScriptRoot 'secrets.cmd') -ErrorAction SilentlyContinue | Where-Object { $_ -match '^set "SMTP_HOST=(.*)"$' } | Select-Object -Last 1
+if ($smtpLine -match '^set "SMTP_HOST=(.*)"$' -and $Matches[1] -notin '127.0.0.1', 'localhost') {
+  throw "Real mail is on (SMTP_HOST=$($Matches[1]) in secrets.cmd). Switch back to MailDev and restart Camunda before running the scenarios."
+}
 
 function Invoke-Api([string]$Method, [string]$Path, $Body) {
   $params = @{ Method = $Method; Uri = "$Camunda$Path"; ContentType = 'application/json' }
@@ -44,16 +58,19 @@ function Get-ProcessVariable([string]$Pik, [string]$Name) {
 
 function Start-Booking($s) {
   $sessions = if ($s.Sessions) { $s.Sessions } else { @(@{ venue = $s.Venue; bookingDate = $s.Date; startTime = $s.From; endTime = $s.To }) }
+  # Short review times, so the reminder and expiry case (C) finishes within the run. The app's default is 1 day.
   $vars = @{
     requesterName = "Scenario $($s.Id)"; email = "scenario.$($s.Id.ToLower())@example.com"; purpose = $s.Desc
     attendees = $s.People; sessions = @($sessions)
+    approvalTimes = @{ timeout = 'PT2M'; reminder = 'PT1M'; timeoutText = '2 minutes'; reminderText = '1 minute'; leftText = '1 minute' }
   }
   (Invoke-Api POST '/v2/process-instances' @{ processDefinitionId = 'hall-booking'; variables = $vars }).processInstanceKey
 }
 
-# Child instances of a booking: one Hall Approval per approver in the chain (Call Activity).
+# Child instances of a booking: one Hall Approval per approver in the chain (Call Activity). The booking's Send email
+# children (request received, service issue) are left out.
 function Get-Children([string]$Pik) {
-  @((Invoke-Api POST '/v2/process-instances/search' @{ filter = @{ parentProcessInstanceKey = $Pik } }).items)
+  @((Invoke-Api POST '/v2/process-instances/search' @{ filter = @{ parentProcessInstanceKey = $Pik; processDefinitionId = 'hall-approval' } }).items)
 }
 
 # The open Review booking task of a booking, in whichever child instance is waiting.
@@ -133,7 +150,7 @@ $all = @(
 )
 $byId = @{}; foreach ($s in $all) { $byId[$s.Id] = $s }
 
-try { $seed = @((Invoke-RestMethod "$Register/bookings") | ForEach-Object { $_ }) } catch { throw "Booking register not reachable at $Register. Run scripts\start-backend.cmd first." }
+try { $seed = @((Invoke-RestMethod "$Register/bookings" -Headers $RegisterHeaders) | ForEach-Object { $_ }) } catch { throw "Booking register not reachable at $Register with the key from secrets.cmd ($($_.Exception.Message)). Run scripts\start-backend.cmd first." }
 if ($seed.Count -ne 3) { Write-Warning "The register has $($seed.Count) bookings, not the 3 seed ones. Run scripts\reset-data.cmd for clean results." }
 
 $pik = @{}
@@ -206,12 +223,33 @@ $results = foreach ($s in $all) {
   }
   $emailStatus = Get-ProcessVariable $p 'emailStatus'
   if ($emailStatus -ne 'SENT') { $ok = $false; $why += "email $emailStatus" }
+  $addr = "scenario.$($s.Id.ToLower())@example.com"
   if ($null -ne $inbox) {
-    $addr = "scenario.$($s.Id.ToLower())@example.com"
     $mails = @($inbox | Where-Object { (@($_.to | ForEach-Object { $_.address }) -contains $addr) -and $_.subject -eq "Hall booking $($s.Outcome)" })
     if ($mails.Count -eq 0) { $ok = $false; $why += 'no email in inbox' }
   }
-  if ($s.Id -eq 'C' -and $notes['C'] -ne 'reminder sent') { $ok = $false }
+  # Update emails (send-email child process): "received" to the requester once the slots are held, and one to the
+  # approver role's accounts for every review.
+  if ($s.Approver) {
+    $received = Get-ProcessVariable $p 'receivedEmail'
+    if ($received.status -ne 'SENT') { $ok = $false; $why += "received email $($received.status)" }
+    elseif ($null -ne $inbox -and -not @($inbox | Where-Object { (@($_.to | ForEach-Object { $_.address }) -contains $addr) -and $_.subject -like 'Hall booking request received*' }).Count) {
+      $ok = $false; $why += 'no received email in inbox'
+    }
+    foreach ($c in (Get-Children $p)) {
+      $ae = Get-ProcessVariable $c.processInstanceKey 'approverEmail'
+      if ($ae.status -ne 'SENT') { $ok = $false; $why += "approver email $($ae.status)"; continue }
+      $first = @($ae.to -split ',')[0]
+      if ($null -ne $inbox -and -not @($inbox | Where-Object { (@($_.to | ForEach-Object { $_.address }) -contains $first) -and $_.subject -like '*is waiting for your review' }).Count) {
+        $ok = $false; $why += "no review email to $first"
+      }
+    }
+  }
+  if ($s.Id -eq 'C') {
+    if ($notes['C'] -ne 'reminder sent') { $ok = $false }
+    $re = Get-ProcessVariable $cApproval 'reminderEmail'
+    if ($re.status -ne 'SENT') { $ok = $false; $why += "reminder email $($re.status)" } else { $notes['C'] += ', reminder emailed' }
+  }
   [pscustomobject]@{
     Test     = $s.Id
     Group    = $s.Group
@@ -226,6 +264,6 @@ $results | Format-Table -AutoSize -Wrap
 $passed = @($results | Where-Object { $_.Result -eq 'PASS' }).Count
 Write-Host "$passed of $(@($results).Count) passed"
 
-$bookings = @((Invoke-RestMethod "$Register/bookings") | ForEach-Object { $_ })
-$sent = @((Invoke-RestMethod "$Register/notifications") | ForEach-Object { $_ })
+$bookings = @((Invoke-RestMethod "$Register/bookings" -Headers $RegisterHeaders) | ForEach-Object { $_ })
+$sent = @((Invoke-RestMethod "$Register/notifications" -Headers $RegisterHeaders) | ForEach-Object { $_ })
 Write-Host "The register now holds $($bookings.Count) bookings and $($sent.Count) notifications."

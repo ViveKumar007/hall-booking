@@ -3,9 +3,29 @@
 > Instructions for Claude Code. Read this whole file before changing anything in `hall-booking/`.
 > Process logic lives in BPMN, DMN, forms, FEEL and the REST and Email Outbound Connectors. The application is the
 > Spring Boot backend in `backend-springboot/` (REST API, booking register with JPA, `@JobWorker`s); see its README.
-> Still to come for Milestone 2 (13 Nov 2026): the React frontend and Docker.
+> The frontend is the React app in `frontend-react/` (Vite, Tailwind). Still to come for Milestone 2 (13 Nov 2026): Docker.
 
-## 0. Status (2026-11-09)
+## 0. Status (2026-11-10)
+
+**Sign in with Google and email updates added.** Everyone signs in with a Google account (Spring Security OAuth2 /
+OpenID Connect, verified emails only); roles per account from `APP_ACCOUNTS`; requesters see only their own requests,
+approvers decide only reviews for a role they hold (`decidedBy` recorded), admins see everything; CSRF on every POST;
+the booking register needs `X-Register-Key` (REST connectors: API key authentication). New reusable child process
+`send-email` (worker *Find recipients* → Email connector) called four times: requester (request received), approver
+(review waiting, reminder), admins (service issue). Deployed as hall-booking v12, hall-approval v11, send-email v1.
+**25 of 25 automated scenarios pass** with the new email checks; 44 unit tests pass; a browser test (23 checks:
+sign-in, roles, refused API calls, CSRF, emails in MailDev, sign out) passes. Found and fixed on the way: typed text
+containing `secrets.NAME` was filled in by the connector runtime (now broken up by `SafeText`).
+
+### React frontend (2026-11-09)
+
+**React frontend added** (`frontend-react/`, React 19.1, Vite 8.3, Tailwind CSS 4.3, React Router 7): the same pages as
+before plus a **session builder** (add/remove rows feeding the `sessions` multi-instance input), the custom Tasklist inbox
+and the live route tracker, calling only the backend's `/api`. The backend serves the build (`frontend-react/dist`) on
+:8090; `npm run dev` serves it on :5173 with hot reload. Tested end to end in a browser: two-session request, both
+approvals in the inbox, APPROVED; every page loads without script errors. `hall-booking/app/public` is no longer served.
+
+### Spring Boot backend (2026-11-09)
 
 **Spring Boot backend added** (`backend-springboot/`, Spring Boot 3.5.16, `camunda-spring-boot-starter` 8.8.44, Java 21),
 replacing the Node worker, the Node web server and the json-server mock:
@@ -76,6 +96,7 @@ outages and slowness.
 | Zeebe gRPC (Desktop Modeler deploy) | `http://localhost:26500`, authentication None |
 | Mail server | MailDev 3.0.0 (`npx maildev@3.0.0`): SMTP 127.0.0.1:1025 (login from `secrets.cmd`), inbox http://localhost:1080, REST `GET /api/email` |
 | Backend | `backend-springboot`, `mvnw spring-boot:run` (`scripts/start-backend.cmd`) on http://localhost:8090: pages, `/api`, `/register`, job workers; H2 console /h2-console |
+| Frontend | `frontend-react`: `scripts/build-frontend.cmd` (npm ci + vite build, Node 24) -> `dist/` served by the backend; dev server `npm run dev` on :5173 |
 | Maven | none installed: the Maven wrapper (`mvnw.cmd`) downloads Maven 3.10.0 into `~/.m2/wrapper` |
 | Desktop Modeler | `E:\camunda-modeler-5.49.0-win-x64` (form schemaVersion 19). Launch by double-click: from VS Code's terminal it inherits `ELECTRON_RUN_AS_NODE=1` and quits. |
 
@@ -89,17 +110,19 @@ hall-booking/
 ├─ booking-request-form.form  form id: booking-request-form (dynamic list of sessions)
 ├─ approval-form.form         form id: approval-form
 ├─ service-fix-form.form      form id: service-fix-form
-├─ app/public/                the current pages (plain HTML/CSS/JS), served by the backend until the React app
+├─ app/public/                the earlier plain HTML/CSS/JS pages (no longer served; replaced by frontend-react)
 ├─ mock/db.json               old json-server data (git-ignored), imported once into the backend's register
 ├─ scripts/start-*.cmd        mail, camunda, backend, all
 ├─ scripts/secrets.example.cmd connector secrets template (SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM)
 ├─ scripts/secrets.cmd        the real values (git-ignored; created from the example on first start)
 ├─ scripts/deploy.cmd         deploy DMN + 3 forms + both BPMN files via REST
+├─ scripts/build-frontend.cmd builds frontend-react into dist/
 ├─ scripts/reset-data.cmd     POST /api/demo/reset: back to the 3 seed bookings
 ├─ scripts/run-scenarios.ps1  automated test cases
 └─ README.md                  setup, demo steps, test cases, screenshot checklist
 
 backend-springboot/           Spring Boot backend (see backend-springboot/README.md for layers, API and tables)
+frontend-react/               React frontend (see frontend-react/README.md for pages and requirements)
 ```
 
 ## 2. Booking register (Spring Boot)
@@ -218,14 +241,35 @@ It produces `approved`, `remarks`, `reminderSentAt`, and `decision = {outcome, r
 | ID | Type | Name | Configuration |
 |---|---|---|---|
 | `StartEvent_Approval` | Start event | Approval requested | (started by the Call Activity) |
+| `CallActivity_EmailApprover` | Call activity → `send-email` | Email approver | `toRole=approver`, subject "Booking … is waiting for your review", link `/#/inbox`; out `approverEmail = {status, to, error}` |
 | `User_Approval` | Camunda user task | Review booking | form `approval-form` |
-| `Timer_Reminder` | Boundary timer, **non-interrupting** | After 1 min | `PT1M` → `Worker_Reminder` → `End_Reminded` |
-| `Timer_Timeout` | Boundary timer, **interrupting** | After 2 min | `PT2M` → `Script_MarkExpired` |
+| `Timer_Reminder` | Boundary timer, **non-interrupting** | Reminder time | `=approvalTimes.reminder` (default `PT1H`) → `Worker_Reminder` → `CallActivity_EmailReminder` → `End_Reminded` |
+| `CallActivity_EmailReminder` | Call activity → `send-email` | Email reminder | `toRole=approver`, link `/#/inbox`; out `reminderEmail` |
+| `Timer_Timeout` | Boundary timer, **interrupting** | Time is up | `=approvalTimes.timeout` (default `P1D`) → `Script_MarkExpired` |
 | `Worker_Reminder` | Service task (worker) | Remind approver | type `send-reminder`, input `approverRole=approver` |
-| `Script_RecordDecision` | Script (FEEL) | Record decision | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks, approver: approver}` → `decision` |
-| `Script_MarkExpired` | Script (FEEL) | Mark as expired | `={outcome: "EXPIRED", remarks: "Not reviewed within 2 minutes", approver: approver}` → `decision` |
+| `Script_RecordDecision` | Script (FEEL) | Record decision | `={outcome: if approved = true then "APPROVED" else "REJECTED", remarks: remarks, approver: approver, decidedBy: decidedBy}` → `decision` (`decidedBy` = the signing-in account, set by the backend on completion) |
+| `Script_MarkExpired` | Script (FEEL) | Mark as expired | `={outcome: "EXPIRED", remarks: "Not reviewed within " + approvalTimes.timeoutText, approver: approver}` → `decision` |
 | `Gateway_DecisionMerge` | XOR merge | | |
 | `End_Decided` | End event | Decision made | |
+
+### 4.2b Child process `send-email` (`send-email.bpmn`)
+
+Called with `propagateAllParentVariables=false`: in `to` (an address) or `toRole` (approver role or `admin`), `subject`,
+`body`, `link`; out `emailStatus`, `recipients`, `emailError`.
+
+| ID | Type | Name | Configuration |
+|---|---|---|---|
+| `StartEvent_Email` | Start event | Email requested | |
+| `Worker_FindRecipients` | Service task (worker) | Find recipients | type `resolve-recipients` → `recipients`, `recipientCount`, `linkUrl`, `emailStatus` |
+| `Gateway_AnyRecipient` | XOR | Anyone to email? | `=recipientCount > 0` → `Email_Send`; default → `End_Nobody` |
+| `Email_Send` | Email connector (`io.camunda:email:1`) | Send email | same SMTP secrets as *Email requester*; to `=recipients`; body `=body` + the link; result `{emailStatus: "SENT"}` |
+| `Boundary_SendFailed` | Error boundary `EMAIL_FAILED` | Email failed | out `emailStatus = "FAILED"`, `emailError` → `End_Failed` |
+| `End_Sent`, `End_Failed`, `End_Nobody` | End events | | |
+
+Called from hall-booking by `CallActivity_EmailReceived` (after *Hold slot*: to the requester, "request received",
+out `receivedEmail`) and `CallActivity_EmailAdmin` (between *Gateway_ServiceIssue* and *Resolve service issue*:
+`toRole="admin"`, out `serviceEmail`). The five REST connectors authenticate to the register with *API key* in the
+header `X-Register-Key` = `{{secrets.REGISTER_API_KEY}}`.
 
 ### 4.3 Expressions
 
@@ -261,6 +305,7 @@ tested directly. Verified on 8.8.32: with `some d in decisions …` all approver
 |---|---|---|---|
 | `validate-booking` | `Worker_ValidateRequest` | per session: `durationHours > 0`, `bookingDate >= today`, `attendees <= capacity` (hall-a 200, hall-b 150, lab-1 60); no two sessions of the request overlap | `validation`, or **`ZeebeBpmnError`** `INVALID_REQUEST` with variables `outcome`, `validation`; records the request in `booking_request` |
 | `send-reminder` | `Worker_Reminder` | writes `outbox/*_REMINDER_*.txt`, logs | `reminderSentAt` |
+| `resolve-recipients` | `Worker_FindRecipients` (send-email, class `EmailWorkers`) | `to` → that address; `toRole` → the accounts holding it in `APP_ACCOUNTS`, else the admins | `recipients` (comma-separated), `recipientCount`, `linkUrl`, `recipientNote`, `emailStatus` PENDING / NO_RECIPIENT |
 | `record-notification` | `Worker_Notify` | writes `outbox/*_<OUTCOME>_*.txt`, `POST /notifications` with `emailStatus`/`emailError` (best effort) | `notificationId`, `notifiedAt` |
 
 Spring `@JobWorker(type = ...)` methods with `@VariablesAsType` records (only the named variables are fetched); the SDK
@@ -321,7 +366,7 @@ MailDev inbox (`GET /api/email`). **All dates are fixed: from 12 Jan 2027 the te
 |---|---|---|---|---|
 | A | Main path | hall-a, 12 Jan, 14–16, 50; approve | `admin-office`, `APPROVED` | PASS |
 | B | Main path | hall-a, 11 Jan, 11–13 | `CONFLICT` | PASS |
-| C | Main path | lab-1, 13 Jan, 10–12; nobody acts | reminder at 1 min, `EXPIRED` at 2 min, `lab-incharge` | PASS |
+| C | Main path | lab-1, 13 Jan, 10–12; nobody acts (the script starts it with `approvalTimes` 2 min / 1 min) | reminder at 1 min, `EXPIRED` at 2 min, `lab-incharge` | PASS |
 | D | Main path | hall-b, 14 Jan, 15–13 | `INVALID_TIME` | PASS |
 | E | Main path | hall-b, 15 Jan, 09–15, 80; approve | `dean`, `APPROVED` | PASS |
 | F | Main path | hall-b, 18 Jan, 10–12, 150; reject | `hod`, `REJECTED` | PASS |
@@ -369,6 +414,5 @@ Manual (need a window closed, slowed or reopened):
 
 ## 10. Next steps (course guidelines, Milestone 2 by 13 Nov 2026)
 
-- React (Vite + Tailwind) frontend: session list builder, custom Tasklist inbox, live status tracker (port from `app/public`), calling the backend's `/api`.
 - Docker: Dockerfiles + root `docker-compose.yml`; repository layout `bpmn-models/`, `backend-springboot/`, `frontend-react/`.
 - Make test dates relative to today (they expire on 12 Jan 2027).

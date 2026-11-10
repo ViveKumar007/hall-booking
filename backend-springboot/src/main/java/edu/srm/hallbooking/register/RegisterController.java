@@ -5,6 +5,8 @@ import edu.srm.hallbooking.domain.RegisterSlot;
 import edu.srm.hallbooking.domain.SlotStatus;
 import edu.srm.hallbooking.repository.NotificationRepository;
 import edu.srm.hallbooking.repository.RegisterSlotRepository;
+import edu.srm.hallbooking.service.SeedService;
+import java.io.IOException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -47,10 +49,25 @@ public class RegisterController {
 
   private final RegisterSlotRepository slots;
   private final NotificationRepository notifications;
+  private final SeedService seed;
+  private final RegisterMode mode;
 
-  public RegisterController(RegisterSlotRepository slots, NotificationRepository notifications) {
+  public RegisterController(RegisterSlotRepository slots, NotificationRepository notifications, SeedService seed,
+      RegisterMode mode) {
     this.slots = slots;
     this.notifications = notifications;
+    this.seed = seed;
+    this.mode = mode;
+  }
+
+  /**
+   * Test helper for scripts/reset-data.cmd and run-scenarios.ps1: back to the three seed bookings, no notifications,
+   * register switched back to normal. Like every /register call it needs the X-Register-Key.
+   */
+  @PostMapping("/reset")
+  public Map<String, Object> reset() throws IOException {
+    mode.set(RegisterMode.Mode.UP);
+    return Map.of("ok", true, "bookings", seed.reset());
   }
 
   /** Body of POST /register/bookings, as the Hold slot connector sends it. */

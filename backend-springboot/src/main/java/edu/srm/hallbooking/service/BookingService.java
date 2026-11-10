@@ -14,6 +14,7 @@ import edu.srm.hallbooking.domain.BookingRequest;
 import edu.srm.hallbooking.domain.RequestSession;
 import edu.srm.hallbooking.repository.BookingRequestRepository;
 import edu.srm.hallbooking.repository.NotificationRepository;
+import edu.srm.hallbooking.security.SignedInUser;
 import edu.srm.hallbooking.web.ApiException;
 import io.camunda.client.api.command.ClientException;
 import io.camunda.client.api.command.ClientHttpException;
@@ -71,14 +72,21 @@ public class BookingService {
 
   // ------------------------------------------------------------------ start
 
-  /** Checks the form (missing or malformed fields only; business rules are the worker's), starts the process. */
-  public long start(BookingForm form) {
+  /**
+   * Checks the form (missing or malformed fields only; business rules are the worker's), starts the process. The
+   * requester is the signed-in person: their Google email, and their Google name unless the form gives one.
+   */
+  public long start(BookingForm form, SignedInUser user) {
     List<SessionForm> sessions = form.sessions() != null ? form.sessions()
         : List.of(new SessionForm(form.venue(), form.bookingDate(), form.startTime(), form.endTime()));
     Integer attendees = toInt(form.attendees());
-    String name = form.requesterName() == null ? "" : form.requesterName().trim();
-    String email = form.email() == null ? "" : form.email().trim();
-    String purpose = form.purpose() == null ? "" : form.purpose().trim();
+    String name = SafeText.plain(form.requesterName() != null && !form.requesterName().isBlank()
+        ? form.requesterName() : user.name());
+    String email = user.email();
+    if (SafeText.hasSecretReference(email)) {
+      throw new ApiException(HttpStatus.BAD_REQUEST, "This email address cannot be used for bookings.");
+    }
+    String purpose = SafeText.plain(form.purpose());
 
     Map<String, String> errors = new LinkedHashMap<>();
     if (name.isEmpty()) errors.put("requesterName", "Enter your name.");
@@ -104,6 +112,7 @@ public class BookingService {
     variables.put("email", email);
     variables.put("attendees", attendees);
     variables.put("purpose", purpose);
+    variables.put("approvalTimes", ApprovalTimes.variable(props.approvalTimeout(), props.approvalReminder()));
     variables.put("sessions", sessions.stream().map(s -> Map.of(
         "venue", s.venue(), "bookingDate", s.bookingDate(), "startTime", s.startTime(), "endTime", s.endTime())).toList());
     long key = camunda.startBooking(variables);
@@ -126,8 +135,11 @@ public class BookingService {
    * Requests from the database, newest first. Finished ones carry their outcome; for the ones still running, the
    * current waiting point comes from Camunda (usually only a few, so this stays cheap).
    */
-  public List<Map<String, Object>> list(String email, int limit) {
+  public List<Map<String, Object>> list(SignedInUser user, String email, int limit) {
     PageRequest page = PageRequest.of(0, Math.max(1, Math.min(limit, 100)));
+    if (!user.isAdmin()) {
+      email = user.email(); // everyone else sees only their own requests
+    }
     List<BookingRequest> rows = email == null || email.isBlank()
         ? requests.findAllByOrderByCreatedAtDesc(page)
         : requests.findByEmailIgnoreCaseOrderByCreatedAtDesc(email.trim(), page);
@@ -171,13 +183,19 @@ public class BookingService {
 
   // ------------------------------------------------------------------ detail
 
-  /** One booking with its live route across the booking process and its approval child processes. */
-  public Map<String, Object> detail(long key) {
+  /**
+   * One booking with its live route across the booking process and its approval child processes. Open to the
+   * requester, to the approvers it went to, and to admins.
+   */
+  public Map<String, Object> detail(long key, SignedInUser user) {
     ProcessInstance pi = camunda.instance(key);
     if (pi.getProcessDefinitionId() != null && !CamundaGateway.BOOKING_PROCESS.equals(pi.getProcessDefinitionId())) {
       throw new ApiException(HttpStatus.NOT_FOUND, "That is not a booking.");
     }
     Map<String, Object> vars = camunda.variables(key);
+    if (!mayView(user, str(vars, "email"), strings(vars, "approvers"))) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "This is someone else's request.");
+    }
     List<ElementInstance> deskEls = camunda.elements(key, null);
     List<String> activeIds = deskEls.stream().filter(e -> e.getState() == ElementInstanceState.ACTIVE)
         .map(ElementInstance::getElementId).toList();
@@ -189,7 +207,7 @@ public class BookingService {
     List<Placed> placed = new ArrayList<>(deskEls.stream().map(e -> new Placed(e, Map.<String, Object>of())).toList());
     List<String> approvalKeys = new ArrayList<>();
     Map<String, Object> review = null;
-    for (ProcessInstance child : camunda.children(key)) {
+    for (ProcessInstance child : camunda.approvals(key)) {
       long childKey = child.getProcessInstanceKey();
       approvalKeys.add(String.valueOf(childKey));
       Map<String, Object> a = camunda.variables(childKey);
@@ -198,7 +216,8 @@ public class BookingService {
         if ("User_Approval".equals(e.getElementId()) && e.getState() == ElementInstanceState.ACTIVE) {
           review = new LinkedHashMap<>();
           review.put("since", iso(e.getStartDate()));
-          review.put("due", iso(e.getStartDate().plusMinutes(props.approvalMinutes())));
+          review.put("due", iso(e.getStartDate().plus(ApprovalTimes.timeoutOf(a, props.approvalTimeout()))));
+          review.put("reminderText", str(a, "approvalTimes", "reminderText"));
           review.put("reminderSent", get(a, "reminderSentAt") != null);
           review.put("approver", str(a, "approver"));
           review.put("step", get(a, "approvalStep"));
@@ -255,6 +274,13 @@ public class BookingService {
   }
 
   // ------------------------------------------------------------------ helpers
+
+  /** The requester, an approver the request went to, or an admin. */
+  static boolean mayView(SignedInUser user, String requesterEmail, List<String> approvers) {
+    return user.isAdmin()
+        || (requesterEmail != null && requesterEmail.equalsIgnoreCase(user.email()))
+        || approvers.stream().anyMatch(user::holds);
+  }
 
   /** Fields every booking summary has; venue/bookingDate/startTime/endTime describe the first session. */
   private static Map<String, Object> summaryBase(String key, String state, String startDate, String endDate,

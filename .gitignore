@@ -17,5 +17,11 @@ backend-springboot/target/
 backend-springboot/data/
 backend-springboot/logs/
 
+# React frontend build output (scripts/build-frontend.cmd)
+frontend-react/dist/
+
 # graphify knowledge-graph output (rebuild with /graphify)
 graphify-out/
+
+# Google OAuth client files downloaded from Google Cloud (contain the client secret)
+client_secret_*.json

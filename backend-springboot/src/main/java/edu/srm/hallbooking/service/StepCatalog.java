@@ -78,6 +78,9 @@ final class StepCatalog {
         : roles(c.v(), "sessionApprovers", ", ") + " (decision table)");
     desk("Script_PlanApprovals", "Approval chain", c -> roles(c.v(), "approvers", " → "));
     desk("Rest_HoldSlot", "Slots held", c -> refs(c.v()) == null ? "" : refs(c.v()) + ", pending");
+    desk("CallActivity_EmailReceived", "Requester emailed", c -> emailed(c, c.v(), "receivedEmail",
+        "To " + str(c.v(), "email")));
+    desk("CallActivity_EmailAdmin", "Admins emailed", c -> emailed(c, c.v(), "serviceEmail", "To the admins"));
     STEPS.put("CallActivity_Approval", new Step("desk", "out", "Approval requested", c -> get(c.v(), "approvers") == null
         ? "" : count(strings(c.v(), "approvers").size(), "approver") + ", one after another"));
     STEPS.put("StartEvent_Approval", new Step("admin", "in", "Review opened", c -> {
@@ -85,6 +88,10 @@ final class StepCatalog {
       return "For " + Catalog.roleName(str(c.a(), "approver"))
           + (steps != null && steps > 1 ? " (step " + str(c.a(), "approvalStep") + " of " + steps + ")" : "");
     }));
+    admin("CallActivity_EmailApprover", "Approver emailed", c -> emailed(c, c.a(), "approverEmail",
+        "To the " + Catalog.roleName(str(c.a(), "approver"))));
+    admin("CallActivity_EmailReminder", "Reminder emailed", c -> emailed(c, c.a(), "reminderEmail",
+        "To the " + Catalog.roleName(str(c.a(), "approver"))));
     admin("User_Approval", "Review by approver", c -> {
       if (c.active()) return "Waiting for " + Catalog.roleName(str(c.a(), "approver"));
       if (c.terminated()) return "No response in time";
@@ -92,8 +99,10 @@ final class StepCatalog {
       return (isTrue(c.a(), "approved") ? "Approved" : "Rejected")
           + (remarks == null || remarks.isBlank() ? "" : ": “" + remarks + "”");
     });
-    admin("Worker_Reminder", "Reminder sent", c -> "To " + Catalog.roleName(str(c.a(), "approver")) + " after 1 minute");
-    admin("Script_MarkExpired", "Marked as expired", c -> "Not reviewed within 2 minutes");
+    admin("Worker_Reminder", "Reminder sent", c -> "To " + Catalog.roleName(str(c.a(), "approver"))
+        + (str(c.a(), "approvalTimes", "reminderText") == null ? "" : " after " + str(c.a(), "approvalTimes", "reminderText")));
+    admin("Script_MarkExpired", "Marked as expired", c -> "Not reviewed within "
+        + nz(str(c.a(), "approvalTimes", "timeoutText")));
     STEPS.put("End_Decided", new Step("admin", "out", "Decision returned", c -> get(c.a(), "decision") == null ? ""
         : str(c.a(), "decision", "outcome") + " by " + Catalog.roleName(str(c.a(), "approver"))));
     STEPS.put("Script_SummarizeDecision", new Step("desk", "in", "Decisions combined",
@@ -109,6 +118,19 @@ final class StepCatalog {
     });
     desk("Worker_Notify", "Notification recorded", c -> "FAILED".equals(str(c.v(), "emailStatus"))
         ? "Kept for follow-up; the email did not go out" : "In the notifications log");
+  }
+
+  /**
+   * A send-email call: its result ({status, to, error}) is in the variable name. Approver addresses are not shown
+   * (the requester sees this page); "to" says who in words.
+   */
+  private static String emailed(Ctx c, Map<String, Object> vars, String name, String to) {
+    if (c.active()) return "Sending…";
+    if (c.terminated()) return "Not sent";
+    String status = str(vars, name, "status");
+    if ("NO_RECIPIENT".equals(status)) return "Nobody to email: no account holds that role";
+    if ("FAILED".equals(status)) return to.replaceFirst("^To", "Could not email") + " (mail server error)";
+    return to + " (send-email process)";
   }
 
   private static String nz(String s) {

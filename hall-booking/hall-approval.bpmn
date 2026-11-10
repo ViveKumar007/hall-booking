@@ -1,28 +1,44 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_HallApproval" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.49.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
   <bpmn:process id="hall-approval" name="Hall Approval" isExecutable="true">
-    <bpmn:documentation>Reusable child process, called by hall-booking's Call Activity once per approver. In: approver, approvalStep, approvalSteps, requesterName, email, attendees, purpose, sessions, bookingRef. Out: decision = {outcome, remarks, approver}.</bpmn:documentation>
+    <bpmn:documentation>Reusable child process, called by hall-booking's Call Activity once per approver. In: approver, approvalStep, approvalSteps, requesterName, email, attendees, purpose, sessions, bookingRef, approvalTimes = {timeout, reminder, timeoutText, reminderText, leftText} (the two timers as ISO 8601 durations, and in words). Out: decision = {outcome, remarks, approver, decidedBy}. Emails the approver (and the reminder) through send-email.</bpmn:documentation>
     <bpmn:startEvent id="StartEvent_Approval" name="Approval requested">
       <bpmn:outgoing>Flow_ToReview</bpmn:outgoing>
     </bpmn:startEvent>
+    <bpmn:callActivity id="CallActivity_EmailApprover" name="Email approver">
+      <bpmn:documentation>Call Activity to the reusable send-email process: emails the accounts holding this approver role that a review is waiting.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="send-email" propagateAllChildVariables="false" propagateAllParentVariables="false" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=null" target="to" />
+          <zeebe:input source="=approver" target="toRole" />
+          <zeebe:input source="=&#34;Booking &#34; + bookingRef + &#34; is waiting for your review&#34;" target="subject" />
+          <zeebe:input source="=&#34;Hello,\n\n&#34; + requesterName + &#34; (&#34; + email + &#34;) asks to book:\n&#34; + string join(for s in sessions return &#34;- &#34; + s.venue + &#34; on &#34; + s.bookingDate + &#34;, &#34; + s.startTime + &#34;-&#34; + s.endTime, &#34;\n&#34;) + &#34;\nPeople: &#34; + string(attendees) + (if purpose = null or purpose = &#34;&#34; then &#34;&#34; else &#34;\nPurpose: &#34; + purpose) + &#34;\n\nYou review it as &#34; + get value({&#34;admin-office&#34;: &#34;Admin office&#34;, &#34;dean&#34;: &#34;Dean&#34;, &#34;hod&#34;: &#34;HOD&#34;, &#34;lab-incharge&#34;: &#34;Lab in-charge&#34;}, approver) + (if approvalSteps &gt; 1 then &#34; (step &#34; + string(approvalStep) + &#34; of &#34; + string(approvalSteps) + &#34;)&#34; else &#34;&#34;) + &#34;. Please approve or reject it in your inbox within &#34; + approvalTimes.timeoutText + &#34;; after that it expires.\n\nHall Booking Office&#34;" target="body" />
+          <zeebe:input source="=&#34;/#/inbox&#34;" target="link" />
+          <zeebe:output source="={status: emailStatus, to: recipients, error: emailError}" target="approverEmail" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToReviewTask</bpmn:outgoing>
+    </bpmn:callActivity>
     <bpmn:userTask id="User_Approval" name="Review booking">
       <bpmn:extensionElements>
         <zeebe:userTask />
         <zeebe:formDefinition formId="approval-form" />
       </bpmn:extensionElements>
-      <bpmn:incoming>Flow_ToReview</bpmn:incoming>
+      <bpmn:incoming>Flow_ToReviewTask</bpmn:incoming>
       <bpmn:outgoing>Flow_ToRecord</bpmn:outgoing>
     </bpmn:userTask>
-    <bpmn:boundaryEvent id="Timer_Reminder" name="After 1 min" cancelActivity="false" attachedToRef="User_Approval">
+    <bpmn:boundaryEvent id="Timer_Reminder" name="Reminder time" cancelActivity="false" attachedToRef="User_Approval">
       <bpmn:outgoing>Flow_Reminder</bpmn:outgoing>
       <bpmn:timerEventDefinition id="TimerEventDefinition_Reminder">
-        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT1M</bpmn:timeDuration>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">=approvalTimes.reminder</bpmn:timeDuration>
       </bpmn:timerEventDefinition>
     </bpmn:boundaryEvent>
-    <bpmn:boundaryEvent id="Timer_Timeout" name="After 2 min" attachedToRef="User_Approval">
+    <bpmn:boundaryEvent id="Timer_Timeout" name="Time is up" attachedToRef="User_Approval">
       <bpmn:outgoing>Flow_Timeout</bpmn:outgoing>
       <bpmn:timerEventDefinition id="TimerEventDefinition_Timeout">
-        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT2M</bpmn:timeDuration>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">=approvalTimes.timeout</bpmn:timeDuration>
       </bpmn:timerEventDefinition>
     </bpmn:boundaryEvent>
     <bpmn:serviceTask id="Worker_Reminder" name="Remind approver">
@@ -33,21 +49,37 @@
         </zeebe:ioMapping>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_Reminder</bpmn:incoming>
-      <bpmn:outgoing>Flow_ReminderToEnd</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ReminderToEmail</bpmn:outgoing>
     </bpmn:serviceTask>
+    <bpmn:callActivity id="CallActivity_EmailReminder" name="Email reminder">
+      <bpmn:documentation>Call Activity to the reusable send-email process: the reminder by email (after approvalTimes.reminder).</bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="send-email" propagateAllChildVariables="false" propagateAllParentVariables="false" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=null" target="to" />
+          <zeebe:input source="=approver" target="toRole" />
+          <zeebe:input source="=&#34;Reminder: booking &#34; + bookingRef + &#34; is still waiting for your review&#34;" target="subject" />
+          <zeebe:input source="=&#34;Hello,\n\nThe booking request from &#34; + requesterName + &#34; (&#34; + bookingRef + &#34;) is still waiting for the decision of the &#34; + get value({&#34;admin-office&#34;: &#34;Admin office&#34;, &#34;dean&#34;: &#34;Dean&#34;, &#34;hod&#34;: &#34;HOD&#34;, &#34;lab-incharge&#34;: &#34;Lab in-charge&#34;}, approver) + &#34;. It expires in &#34; + approvalTimes.leftText + &#34;.\n\nHall Booking Office&#34;" target="body" />
+          <zeebe:input source="=&#34;/#/inbox&#34;" target="link" />
+          <zeebe:output source="={status: emailStatus, to: recipients, error: emailError}" target="reminderEmail" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ReminderToEmail</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReminderToEnd</bpmn:outgoing>
+    </bpmn:callActivity>
     <bpmn:endEvent id="End_Reminded" name="Reminder sent">
       <bpmn:incoming>Flow_ReminderToEnd</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:scriptTask id="Script_RecordDecision" name="Record decision">
       <bpmn:extensionElements>
-        <zeebe:script expression="={outcome: if approved = true then &#34;APPROVED&#34; else &#34;REJECTED&#34;, remarks: remarks, approver: approver}" resultVariable="decision" />
+        <zeebe:script expression="={outcome: if approved = true then &#34;APPROVED&#34; else &#34;REJECTED&#34;, remarks: remarks, approver: approver, decidedBy: decidedBy}" resultVariable="decision" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToRecord</bpmn:incoming>
       <bpmn:outgoing>Flow_RecordToMerge</bpmn:outgoing>
     </bpmn:scriptTask>
     <bpmn:scriptTask id="Script_MarkExpired" name="Mark as expired">
       <bpmn:extensionElements>
-        <zeebe:script expression="={outcome: &#34;EXPIRED&#34;, remarks: &#34;Not reviewed within 2 minutes&#34;, approver: approver}" resultVariable="decision" />
+        <zeebe:script expression="={outcome: &#34;EXPIRED&#34;, remarks: &#34;Not reviewed within &#34; + approvalTimes.timeoutText, approver: approver}" resultVariable="decision" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_Timeout</bpmn:incoming>
       <bpmn:outgoing>Flow_ExpiredToMerge</bpmn:outgoing>
@@ -61,10 +93,12 @@
       <bpmn:incoming>Flow_ToDecided</bpmn:incoming>
     </bpmn:endEvent>
 
-    <bpmn:sequenceFlow id="Flow_ToReview" sourceRef="StartEvent_Approval" targetRef="User_Approval" />
+    <bpmn:sequenceFlow id="Flow_ToReview" sourceRef="StartEvent_Approval" targetRef="CallActivity_EmailApprover" />
+    <bpmn:sequenceFlow id="Flow_ToReviewTask" sourceRef="CallActivity_EmailApprover" targetRef="User_Approval" />
     <bpmn:sequenceFlow id="Flow_ToRecord" sourceRef="User_Approval" targetRef="Script_RecordDecision" />
     <bpmn:sequenceFlow id="Flow_Reminder" sourceRef="Timer_Reminder" targetRef="Worker_Reminder" />
-    <bpmn:sequenceFlow id="Flow_ReminderToEnd" sourceRef="Worker_Reminder" targetRef="End_Reminded" />
+    <bpmn:sequenceFlow id="Flow_ReminderToEmail" sourceRef="Worker_Reminder" targetRef="CallActivity_EmailReminder" />
+    <bpmn:sequenceFlow id="Flow_ReminderToEnd" sourceRef="CallActivity_EmailReminder" targetRef="End_Reminded" />
     <bpmn:sequenceFlow id="Flow_Timeout" sourceRef="Timer_Timeout" targetRef="Script_MarkExpired" />
     <bpmn:sequenceFlow id="Flow_RecordToMerge" sourceRef="Script_RecordDecision" targetRef="Gateway_DecisionMerge" />
     <bpmn:sequenceFlow id="Flow_ExpiredToMerge" sourceRef="Script_MarkExpired" targetRef="Gateway_DecisionMerge" />
@@ -74,24 +108,28 @@
   <bpmndi:BPMNDiagram id="BPMNDiagram_HallApproval">
     <bpmndi:BPMNPlane id="BPMNPlane_HallApproval" bpmnElement="hall-approval">
       <bpmndi:BPMNShape id="StartEvent_Approval_di" bpmnElement="StartEvent_Approval"><dc:Bounds x="152" y="182" width="36" height="36" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="User_Approval_di" bpmnElement="User_Approval"><dc:Bounds x="240" y="160" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Script_MarkExpired_di" bpmnElement="Script_MarkExpired"><dc:Bounds x="420" y="40" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Script_RecordDecision_di" bpmnElement="Script_RecordDecision"><dc:Bounds x="420" y="160" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_DecisionMerge_di" bpmnElement="Gateway_DecisionMerge" isMarkerVisible="true"><dc:Bounds x="575" y="175" width="50" height="50" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="End_Decided_di" bpmnElement="End_Decided"><dc:Bounds x="682" y="182" width="36" height="36" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Worker_Reminder_di" bpmnElement="Worker_Reminder"><dc:Bounds x="330" y="300" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="End_Reminded_di" bpmnElement="End_Reminded"><dc:Bounds x="482" y="322" width="36" height="36" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Timer_Timeout_di" bpmnElement="Timer_Timeout"><dc:Bounds x="302" y="142" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="342" y="128" width="56" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Timer_Reminder_di" bpmnElement="Timer_Reminder"><dc:Bounds x="252" y="222" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="192" y="262" width="56" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_EmailApprover_di" bpmnElement="CallActivity_EmailApprover"><dc:Bounds x="240" y="160" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_EmailReminder_di" bpmnElement="CallActivity_EmailReminder"><dc:Bounds x="620" y="300" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="User_Approval_di" bpmnElement="User_Approval"><dc:Bounds x="380" y="160" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_MarkExpired_di" bpmnElement="Script_MarkExpired"><dc:Bounds x="560" y="40" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_RecordDecision_di" bpmnElement="Script_RecordDecision"><dc:Bounds x="560" y="160" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_DecisionMerge_di" bpmnElement="Gateway_DecisionMerge" isMarkerVisible="true"><dc:Bounds x="715" y="175" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Decided_di" bpmnElement="End_Decided"><dc:Bounds x="822" y="182" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Worker_Reminder_di" bpmnElement="Worker_Reminder"><dc:Bounds x="470" y="300" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Reminded_di" bpmnElement="End_Reminded"><dc:Bounds x="772" y="322" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_Timeout_di" bpmnElement="Timer_Timeout"><dc:Bounds x="442" y="142" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="482" y="128" width="56" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_Reminder_di" bpmnElement="Timer_Reminder"><dc:Bounds x="392" y="222" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="332" y="262" width="56" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
 
       <bpmndi:BPMNEdge id="Flow_ToReview_di" bpmnElement="Flow_ToReview"><di:waypoint x="188" y="200" /><di:waypoint x="240" y="200" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToRecord_di" bpmnElement="Flow_ToRecord"><di:waypoint x="340" y="200" /><di:waypoint x="420" y="200" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Timeout_di" bpmnElement="Flow_Timeout"><di:waypoint x="320" y="142" /><di:waypoint x="320" y="80" /><di:waypoint x="420" y="80" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Reminder_di" bpmnElement="Flow_Reminder"><di:waypoint x="270" y="258" /><di:waypoint x="270" y="340" /><di:waypoint x="330" y="340" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ReminderToEnd_di" bpmnElement="Flow_ReminderToEnd"><di:waypoint x="430" y="340" /><di:waypoint x="482" y="340" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_RecordToMerge_di" bpmnElement="Flow_RecordToMerge"><di:waypoint x="520" y="200" /><di:waypoint x="575" y="200" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ExpiredToMerge_di" bpmnElement="Flow_ExpiredToMerge"><di:waypoint x="520" y="80" /><di:waypoint x="600" y="80" /><di:waypoint x="600" y="175" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToDecided_di" bpmnElement="Flow_ToDecided"><di:waypoint x="625" y="200" /><di:waypoint x="682" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToReviewTask_di" bpmnElement="Flow_ToReviewTask"><di:waypoint x="340" y="200" /><di:waypoint x="380" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToRecord_di" bpmnElement="Flow_ToRecord"><di:waypoint x="480" y="200" /><di:waypoint x="560" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Timeout_di" bpmnElement="Flow_Timeout"><di:waypoint x="460" y="142" /><di:waypoint x="460" y="80" /><di:waypoint x="560" y="80" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Reminder_di" bpmnElement="Flow_Reminder"><di:waypoint x="410" y="258" /><di:waypoint x="410" y="340" /><di:waypoint x="470" y="340" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReminderToEmail_di" bpmnElement="Flow_ReminderToEmail"><di:waypoint x="570" y="340" /><di:waypoint x="620" y="340" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReminderToEnd_di" bpmnElement="Flow_ReminderToEnd"><di:waypoint x="720" y="340" /><di:waypoint x="772" y="340" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordToMerge_di" bpmnElement="Flow_RecordToMerge"><di:waypoint x="660" y="200" /><di:waypoint x="715" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ExpiredToMerge_di" bpmnElement="Flow_ExpiredToMerge"><di:waypoint x="660" y="80" /><di:waypoint x="740" y="80" /><di:waypoint x="740" y="175" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDecided_di" bpmnElement="Flow_ToDecided"><di:waypoint x="765" y="200" /><di:waypoint x="822" y="200" /></bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>

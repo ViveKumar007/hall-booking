@@ -2,11 +2,16 @@
 rem Starts Camunda 8 Run (Zeebe, Operate, Tasklist, Connectors, Elasticsearch).
 rem JAVA_HOME must point at a folder that contains only the JDK (c8run searches it for "java").
 rem The connectors runtime reads its secrets from environment variables, as {{secrets.NAME}} in the BPMN:
-rem   BOOKING_API_URL (booking register in the Spring Boot backend), SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM (from secrets.cmd).
+rem   BOOKING_API_URL (booking register in the Spring Boot backend), REGISTER_API_KEY (sent to it as X-Register-Key),
+rem   SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM (from secrets.cmd).
 set "C8RUN=E:\camunda8-run-8.8-windows-x86_64\c8run-8.8.32"
 set "JAVA_HOME=E:\jdk-21.0.6"
 set "BOOKING_API_URL=http://127.0.0.1:8090/register"
 if not exist "%~dp0secrets.cmd" copy /y "%~dp0secrets.example.cmd" "%~dp0secrets.cmd" >nul
 call "%~dp0secrets.cmd"
+rem The connectors runtime can read every variable of this window as {{secrets.NAME}}: keep only what the BPMN uses.
+set "GOOGLE_CLIENT_ID="
+set "GOOGLE_CLIENT_SECRET="
+set "APP_ACCOUNTS="
 cd /d "%C8RUN%"
 "%C8RUN%\c8run.exe" start

@@ -15,7 +15,9 @@ public record BookingStatus(String code, String label, String tone) {
   static {
     WAITING_AT.put("Worker_ValidateRequest", new BookingStatus("Worker_ValidateRequest", "Validating", "live"));
     WAITING_AT.put("SubProcess_CheckAvailability", new BookingStatus("SubProcess_CheckAvailability", "Checking availability", "live"));
+    WAITING_AT.put("CallActivity_EmailAdmin", new BookingStatus("User_FixService", "Service issue", "bad"));
     WAITING_AT.put("User_FixService", new BookingStatus("User_FixService", "Service issue", "bad"));
+    WAITING_AT.put("CallActivity_EmailReceived", new BookingStatus("CallActivity_EmailReceived", "Sending email", "live"));
     WAITING_AT.put("CallActivity_Approval", new BookingStatus("CallActivity_Approval", "Awaiting approval", "live"));
     WAITING_AT.put("Email_NotifyRequester", new BookingStatus("Email_NotifyRequester", "Sending email", "live"));
     WAITING_AT.put("Worker_Notify", new BookingStatus("Worker_Notify", "Notifying", "live"));

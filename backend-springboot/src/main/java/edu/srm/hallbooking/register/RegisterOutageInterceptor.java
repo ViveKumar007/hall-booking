@@ -26,7 +26,7 @@ public class RegisterOutageInterceptor implements HandlerInterceptor, WebMvcConf
 
   @Override
   public void addInterceptors(@NonNull InterceptorRegistry registry) {
-    registry.addInterceptor(this).addPathPatterns("/register/**");
+    registry.addInterceptor(this).addPathPatterns("/register/**").excludePathPatterns("/register/reset");
   }
 
   @Override

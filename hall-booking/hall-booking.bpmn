@@ -64,7 +64,10 @@
         <bpmn:extensionElements>
           <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
           <zeebe:ioMapping>
-            <zeebe:input source="noAuth" target="authentication.type" />
+            <zeebe:input source="apiKey" target="authentication.type" />
+          <zeebe:input source="headers" target="authentication.apiKeyLocation" />
+          <zeebe:input source="X-Register-Key" target="authentication.name" />
+          <zeebe:input source="{{secrets.REGISTER_API_KEY}}" target="authentication.value" />
             <zeebe:input source="GET" target="method" />
             <zeebe:input source="=&#34;{{secrets.BOOKING_API_URL}}/bookings?hall=&#34; + session.venue + &#34;&amp;day=&#34; + session.bookingDate" target="url" />
             <zeebe:input source="false" target="storeResponse" />
@@ -127,8 +130,24 @@
     <bpmn:exclusiveGateway id="Gateway_ServiceIssue">
       <bpmn:incoming>Flow_ServiceDown</bpmn:incoming>
       <bpmn:incoming>Flow_TimeoutToIssue</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToFix</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToEmailAdmin</bpmn:outgoing>
     </bpmn:exclusiveGateway>
+    <bpmn:callActivity id="CallActivity_EmailAdmin" name="Email admins: service issue">
+      <bpmn:documentation>Call Activity to the reusable send-email process: tells the admins the booking register is not answering, so they can retry or cancel.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="send-email" propagateAllChildVariables="false" propagateAllParentVariables="false" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=null" target="to" />
+          <zeebe:input source="=&#34;admin&#34;" target="toRole" />
+          <zeebe:input source="=&#34;Action needed: the booking service is not answering&#34;" target="subject" />
+          <zeebe:input source="=&#34;The booking register could not be reached while checking a request from &#34; + requesterName + &#34; (&#34; + email + &#34;).\n&#34; + (if serviceError = null then &#34;&#34; else &#34;Error: &#34; + serviceError + &#34;\n&#34;) + &#34;\nThe request waits under Service issues: choose Retry once the service is back, or Cancel to tell the requester.\n\nHall Booking&#34;" target="body" />
+          <zeebe:input source="=&#34;/#/issues&#34;" target="link" />
+          <zeebe:output source="={status: emailStatus, to: recipients, error: emailError}" target="serviceEmail" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToEmailAdmin</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToFix</bpmn:outgoing>
+    </bpmn:callActivity>
     <bpmn:userTask id="User_FixService" name="Resolve service issue">
       <bpmn:extensionElements>
         <zeebe:userTask />
@@ -191,7 +210,10 @@
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="noAuth" target="authentication.type" />
+          <zeebe:input source="apiKey" target="authentication.type" />
+          <zeebe:input source="headers" target="authentication.apiKeyLocation" />
+          <zeebe:input source="X-Register-Key" target="authentication.name" />
+          <zeebe:input source="{{secrets.REGISTER_API_KEY}}" target="authentication.value" />
           <zeebe:input source="POST" target="method" />
           <zeebe:input source="{{secrets.BOOKING_API_URL}}/bookings" target="url" />
           <zeebe:input source="false" target="storeResponse" />
@@ -209,13 +231,29 @@
         </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToHold</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToApproval</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToEmailReceived</bpmn:outgoing>
       <bpmn:multiInstanceLoopCharacteristics>
         <bpmn:extensionElements>
           <zeebe:loopCharacteristics inputCollection="=sessions" inputElement="session" outputCollection="heldSlots" outputElement="={id: bookingId, ref: &#34;BK-&#34; + string(bookingId), venue: session.venue, bookingDate: session.bookingDate, startTime: session.startTime, endTime: session.endTime}" />
         </bpmn:extensionElements>
       </bpmn:multiInstanceLoopCharacteristics>
     </bpmn:serviceTask>
+    <bpmn:callActivity id="CallActivity_EmailReceived" name="Email requester: received">
+      <bpmn:documentation>Call Activity to the reusable send-email process: tells the requester the slots are held and who reviews the request next.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="send-email" propagateAllChildVariables="false" propagateAllParentVariables="false" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=email" target="to" />
+          <zeebe:input source="=null" target="toRole" />
+          <zeebe:input source="=&#34;Hall booking request received: &#34; + string join(for h in heldSlots return h.ref, &#34;, &#34;)" target="subject" />
+          <zeebe:input source="=&#34;Dear &#34; + requesterName + &#34;,\n\nWe have received your booking request and are holding these sessions for you while it is reviewed:\n&#34; + string join(for s in sessions return &#34;- &#34; + s.venue + &#34; on &#34; + s.bookingDate + &#34;, &#34; + s.startTime + &#34;-&#34; + s.endTime, &#34;\n&#34;) + &#34;\n\nBooking reference: &#34; + string join(for h in heldSlots return h.ref, &#34;, &#34;) + &#34;\nIt now goes to: &#34; + string join(for a in approvers return get value({&#34;admin-office&#34;: &#34;Admin office&#34;, &#34;dean&#34;: &#34;Dean&#34;, &#34;hod&#34;: &#34;HOD&#34;, &#34;lab-incharge&#34;: &#34;Lab in-charge&#34;}, a), &#34;, then &#34;) + &#34;. You will get another email with the decision.\n\nHall Booking Office&#34;" target="body" />
+          <zeebe:input source="=&#34;/#/requests&#34;" target="link" />
+          <zeebe:output source="={status: emailStatus, to: recipients, error: emailError}" target="receivedEmail" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToEmailReceived</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToApproval</bpmn:outgoing>
+    </bpmn:callActivity>
     <bpmn:callActivity id="CallActivity_Approval" name="Get approval">
       <bpmn:documentation>Call Activity to the reusable child process hall-approval, sequential multi-instance over approvers. Stops at the first decision that is not APPROVED.</bpmn:documentation>
       <bpmn:extensionElements>
@@ -230,6 +268,7 @@
           <zeebe:input source="=purpose" target="purpose" />
           <zeebe:input source="=sessions" target="sessions" />
           <zeebe:input source="=string join(for h in heldSlots return h.ref, &#34;, &#34;)" target="bookingRef" />
+          <zeebe:input source="=if approvalTimes = null then {timeout: &#34;P1D&#34;, reminder: &#34;PT1H&#34;, timeoutText: &#34;1 day&#34;, reminderText: &#34;1 hour&#34;, leftText: &#34;23 hours&#34;} else approvalTimes" target="approvalTimes" />
           <zeebe:input source="=null" target="decision" />
           <zeebe:output source="=decision" target="decision" />
         </zeebe:ioMapping>
@@ -260,7 +299,10 @@
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="noAuth" target="authentication.type" />
+          <zeebe:input source="apiKey" target="authentication.type" />
+          <zeebe:input source="headers" target="authentication.apiKeyLocation" />
+          <zeebe:input source="X-Register-Key" target="authentication.name" />
+          <zeebe:input source="{{secrets.REGISTER_API_KEY}}" target="authentication.value" />
           <zeebe:input source="PATCH" target="method" />
           <zeebe:input source="=&#34;{{secrets.BOOKING_API_URL}}/bookings/&#34; + string(held.id)" target="url" />
           <zeebe:input source="false" target="storeResponse" />
@@ -288,7 +330,10 @@
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="noAuth" target="authentication.type" />
+          <zeebe:input source="apiKey" target="authentication.type" />
+          <zeebe:input source="headers" target="authentication.apiKeyLocation" />
+          <zeebe:input source="X-Register-Key" target="authentication.name" />
+          <zeebe:input source="{{secrets.REGISTER_API_KEY}}" target="authentication.value" />
           <zeebe:input source="DELETE" target="method" />
           <zeebe:input source="=&#34;{{secrets.BOOKING_API_URL}}/bookings/&#34; + string(held.id)" target="url" />
           <zeebe:input source="false" target="storeResponse" />
@@ -314,7 +359,10 @@
       <bpmn:extensionElements>
         <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
         <zeebe:ioMapping>
-          <zeebe:input source="noAuth" target="authentication.type" />
+          <zeebe:input source="apiKey" target="authentication.type" />
+          <zeebe:input source="headers" target="authentication.apiKeyLocation" />
+          <zeebe:input source="X-Register-Key" target="authentication.name" />
+          <zeebe:input source="{{secrets.REGISTER_API_KEY}}" target="authentication.value" />
           <zeebe:input source="DELETE" target="method" />
           <zeebe:input source="=&#34;{{secrets.BOOKING_API_URL}}/bookings/&#34; + string(held.id)" target="url" />
           <zeebe:input source="false" target="storeResponse" />
@@ -364,7 +412,7 @@
           <zeebe:input source="smtp" target="protocol" />
           <zeebe:input source="{{secrets.SMTP_HOST}}" target="data.smtpConfig.smtpHost" />
           <zeebe:input source="{{secrets.SMTP_PORT}}" target="data.smtpConfig.smtpPort" />
-          <zeebe:input source="NONE" target="data.smtpConfig.smtpCryptographicProtocol" />
+          <zeebe:input source="{{secrets.SMTP_SECURITY}}" target="data.smtpConfig.smtpCryptographicProtocol" />
           <zeebe:input source="sendEmailSmtp" target="data.smtpActionDiscriminator" />
           <zeebe:input source="{{secrets.MAIL_FROM}}" target="data.smtpAction.from" />
           <zeebe:input source="=notification.to" target="data.smtpAction.to" />
@@ -424,7 +472,8 @@
     <bpmn:sequenceFlow id="Flow_ServiceDown" sourceRef="Boundary_ServiceDown" targetRef="Gateway_ServiceIssue" />
     <bpmn:sequenceFlow id="Flow_Timeout" sourceRef="Timer_CheckTimeout" targetRef="Script_SetTimeoutError" />
     <bpmn:sequenceFlow id="Flow_TimeoutToIssue" sourceRef="Script_SetTimeoutError" targetRef="Gateway_ServiceIssue" />
-    <bpmn:sequenceFlow id="Flow_ToFix" sourceRef="Gateway_ServiceIssue" targetRef="User_FixService" />
+    <bpmn:sequenceFlow id="Flow_ToEmailAdmin" sourceRef="Gateway_ServiceIssue" targetRef="CallActivity_EmailAdmin" />
+    <bpmn:sequenceFlow id="Flow_ToFix" sourceRef="CallActivity_EmailAdmin" targetRef="User_FixService" />
     <bpmn:sequenceFlow id="Flow_ToFixAction" sourceRef="User_FixService" targetRef="Gateway_FixAction" />
     <bpmn:sequenceFlow id="Flow_Retry" name="Retry" sourceRef="Gateway_FixAction" targetRef="Gateway_FetchRetry">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=serviceFixAction = "RETRY"</bpmn:conditionExpression>
@@ -439,7 +488,8 @@
     <bpmn:sequenceFlow id="Flow_ReasonToMerge" sourceRef="Script_SetReason" targetRef="Gateway_Merge" />
     <bpmn:sequenceFlow id="Flow_ToPlan" sourceRef="Dmn_DecideApprover" targetRef="Script_PlanApprovals" />
     <bpmn:sequenceFlow id="Flow_ToHold" sourceRef="Script_PlanApprovals" targetRef="Rest_HoldSlot" />
-    <bpmn:sequenceFlow id="Flow_ToApproval" sourceRef="Rest_HoldSlot" targetRef="CallActivity_Approval" />
+    <bpmn:sequenceFlow id="Flow_ToEmailReceived" sourceRef="Rest_HoldSlot" targetRef="CallActivity_EmailReceived" />
+    <bpmn:sequenceFlow id="Flow_ToApproval" sourceRef="CallActivity_EmailReceived" targetRef="CallActivity_Approval" />
     <bpmn:sequenceFlow id="Flow_ToSummarize" sourceRef="CallActivity_Approval" targetRef="Script_SummarizeDecision" />
     <bpmn:sequenceFlow id="Flow_ToDecision" sourceRef="Script_SummarizeDecision" targetRef="Gateway_Decision" />
     <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_Decision" targetRef="Rest_ConfirmSlot">
@@ -481,19 +531,21 @@
       <bpmndi:BPMNShape id="Dmn_DecideApprover_di" bpmnElement="Dmn_DecideApprover"><dc:Bounds x="1200" y="220" width="100" height="80" /></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Script_PlanApprovals_di" bpmnElement="Script_PlanApprovals"><dc:Bounds x="1340" y="220" width="100" height="80" /></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Rest_HoldSlot_di" bpmnElement="Rest_HoldSlot"><dc:Bounds x="1480" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="CallActivity_Approval_di" bpmnElement="CallActivity_Approval"><dc:Bounds x="1620" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Script_SummarizeDecision_di" bpmnElement="Script_SummarizeDecision"><dc:Bounds x="1760" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_Decision_di" bpmnElement="Gateway_Decision" isMarkerVisible="true"><dc:Bounds x="1905" y="235" width="50" height="50" /><bpmndi:BPMNLabel><dc:Bounds x="1866" y="290" width="46" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Rest_ConfirmSlot_di" bpmnElement="Rest_ConfirmSlot"><dc:Bounds x="2000" y="100" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Rest_ReleaseRejected_di" bpmnElement="Rest_ReleaseRejected"><dc:Bounds x="2000" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Rest_ReleaseExpired_di" bpmnElement="Rest_ReleaseExpired"><dc:Bounds x="2000" y="340" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_Merge_di" bpmnElement="Gateway_Merge" isMarkerVisible="true"><dc:Bounds x="2145" y="235" width="50" height="50" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Script_ComposeNotification_di" bpmnElement="Script_ComposeNotification"><dc:Bounds x="2240" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Email_NotifyRequester_di" bpmnElement="Email_NotifyRequester"><dc:Bounds x="2380" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_NotifyMerge_di" bpmnElement="Gateway_NotifyMerge" isMarkerVisible="true"><dc:Bounds x="2525" y="235" width="50" height="50" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Worker_Notify_di" bpmnElement="Worker_Notify"><dc:Bounds x="2620" y="220" width="100" height="80" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="EndEvent_Done_di" bpmnElement="EndEvent_Done"><dc:Bounds x="2772" y="242" width="36" height="36" /></bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Boundary_EmailFailed_di" bpmnElement="Boundary_EmailFailed"><dc:Bounds x="2412" y="282" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="2438" y="322" width="58" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_EmailReceived_di" bpmnElement="CallActivity_EmailReceived"><dc:Bounds x="1620" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_EmailAdmin_di" bpmnElement="CallActivity_EmailAdmin"><dc:Bounds x="710" y="550" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_Approval_di" bpmnElement="CallActivity_Approval"><dc:Bounds x="1760" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_SummarizeDecision_di" bpmnElement="Script_SummarizeDecision"><dc:Bounds x="1900" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Decision_di" bpmnElement="Gateway_Decision" isMarkerVisible="true"><dc:Bounds x="2045" y="235" width="50" height="50" /><bpmndi:BPMNLabel><dc:Bounds x="2006" y="290" width="46" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Rest_ConfirmSlot_di" bpmnElement="Rest_ConfirmSlot"><dc:Bounds x="2140" y="100" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Rest_ReleaseRejected_di" bpmnElement="Rest_ReleaseRejected"><dc:Bounds x="2140" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Rest_ReleaseExpired_di" bpmnElement="Rest_ReleaseExpired"><dc:Bounds x="2140" y="340" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Merge_di" bpmnElement="Gateway_Merge" isMarkerVisible="true"><dc:Bounds x="2285" y="235" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Script_ComposeNotification_di" bpmnElement="Script_ComposeNotification"><dc:Bounds x="2380" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Email_NotifyRequester_di" bpmnElement="Email_NotifyRequester"><dc:Bounds x="2520" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_NotifyMerge_di" bpmnElement="Gateway_NotifyMerge" isMarkerVisible="true"><dc:Bounds x="2665" y="235" width="50" height="50" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Worker_Notify_di" bpmnElement="Worker_Notify"><dc:Bounds x="2760" y="220" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Done_di" bpmnElement="EndEvent_Done"><dc:Bounds x="2912" y="242" width="36" height="36" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_EmailFailed_di" bpmnElement="Boundary_EmailFailed"><dc:Bounds x="2552" y="282" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="2578" y="322" width="58" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Boundary_Invalid_di" bpmnElement="Boundary_Invalid"><dc:Bounds x="412" y="282" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="452" y="322" width="74" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Boundary_ServiceDown_di" bpmnElement="Boundary_ServiceDown"><dc:Bounds x="742" y="352" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="768" y="392" width="64" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Timer_CheckTimeout_di" bpmnElement="Timer_CheckTimeout"><dc:Bounds x="942" y="352" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="968" y="392" width="50" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
@@ -501,7 +553,7 @@
       <bpmndi:BPMNEdge id="Flow_ToPrepare_di" bpmnElement="Flow_ToPrepare"><di:waypoint x="188" y="260" /><di:waypoint x="230" y="260" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToValidate_di" bpmnElement="Flow_ToValidate"><di:waypoint x="330" y="260" /><di:waypoint x="380" y="260" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Valid_di" bpmnElement="Flow_Valid"><di:waypoint x="480" y="260" /><di:waypoint x="525" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Invalid_di" bpmnElement="Flow_Invalid"><di:waypoint x="430" y="318" /><di:waypoint x="430" y="680" /><di:waypoint x="2170" y="680" /><di:waypoint x="2170" y="285" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Invalid_di" bpmnElement="Flow_Invalid"><di:waypoint x="430" y="318" /><di:waypoint x="430" y="680" /><di:waypoint x="2310" y="680" /><di:waypoint x="2310" y="285" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToFetch_di" bpmnElement="Flow_ToFetch"><di:waypoint x="575" y="260" /><di:waypoint x="620" y="260" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_CheckStart_di" bpmnElement="Flow_CheckStart"><di:waypoint x="688" y="260" /><di:waypoint x="720" y="260" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToDetect_di" bpmnElement="Flow_ToDetect"><di:waypoint x="820" y="260" /><di:waypoint x="860" y="260" /></bpmndi:BPMNEdge>
@@ -510,31 +562,33 @@
       <bpmndi:BPMNEdge id="Flow_ServiceDown_di" bpmnElement="Flow_ServiceDown"><di:waypoint x="760" y="388" /><di:waypoint x="760" y="445" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Timeout_di" bpmnElement="Flow_Timeout"><di:waypoint x="960" y="388" /><di:waypoint x="960" y="430" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_TimeoutToIssue_di" bpmnElement="Flow_TimeoutToIssue"><di:waypoint x="910" y="470" /><di:waypoint x="785" y="470" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToFix_di" bpmnElement="Flow_ToFix"><di:waypoint x="735" y="470" /><di:waypoint x="700" y="470" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEmailAdmin_di" bpmnElement="Flow_ToEmailAdmin"><di:waypoint x="760" y="495" /><di:waypoint x="760" y="550" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToFix_di" bpmnElement="Flow_ToFix"><di:waypoint x="710" y="590" /><di:waypoint x="650" y="590" /><di:waypoint x="650" y="510" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToFixAction_di" bpmnElement="Flow_ToFixAction"><di:waypoint x="600" y="470" /><di:waypoint x="575" y="470" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Retry_di" bpmnElement="Flow_Retry"><di:waypoint x="550" y="445" /><di:waypoint x="550" y="285" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Cancel_di" bpmnElement="Flow_Cancel"><di:waypoint x="550" y="495" /><di:waypoint x="550" y="550" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ServiceErrorToMerge_di" bpmnElement="Flow_ServiceErrorToMerge"><di:waypoint x="550" y="630" /><di:waypoint x="550" y="680" /><di:waypoint x="2170" y="680" /><di:waypoint x="2170" y="285" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ServiceErrorToMerge_di" bpmnElement="Flow_ServiceErrorToMerge"><di:waypoint x="550" y="630" /><di:waypoint x="550" y="680" /><di:waypoint x="2310" y="680" /><di:waypoint x="2310" y="285" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_SlotTaken_di" bpmnElement="Flow_SlotTaken"><di:waypoint x="1130" y="285" /><di:waypoint x="1130" y="430" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_SlotFree_di" bpmnElement="Flow_SlotFree"><di:waypoint x="1155" y="260" /><di:waypoint x="1200" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ReasonToMerge_di" bpmnElement="Flow_ReasonToMerge"><di:waypoint x="1130" y="510" /><di:waypoint x="1130" y="680" /><di:waypoint x="2170" y="680" /><di:waypoint x="2170" y="285" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReasonToMerge_di" bpmnElement="Flow_ReasonToMerge"><di:waypoint x="1130" y="510" /><di:waypoint x="1130" y="680" /><di:waypoint x="2310" y="680" /><di:waypoint x="2310" y="285" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToPlan_di" bpmnElement="Flow_ToPlan"><di:waypoint x="1300" y="260" /><di:waypoint x="1340" y="260" /></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToHold_di" bpmnElement="Flow_ToHold"><di:waypoint x="1440" y="260" /><di:waypoint x="1480" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToApproval_di" bpmnElement="Flow_ToApproval"><di:waypoint x="1580" y="260" /><di:waypoint x="1620" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToSummarize_di" bpmnElement="Flow_ToSummarize"><di:waypoint x="1720" y="260" /><di:waypoint x="1760" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToDecision_di" bpmnElement="Flow_ToDecision"><di:waypoint x="1860" y="260" /><di:waypoint x="1905" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved"><di:waypoint x="1930" y="235" /><di:waypoint x="1930" y="140" /><di:waypoint x="2000" y="140" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Rejected_di" bpmnElement="Flow_Rejected"><di:waypoint x="1955" y="260" /><di:waypoint x="2000" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Expired_di" bpmnElement="Flow_Expired"><di:waypoint x="1930" y="285" /><di:waypoint x="1930" y="380" /><di:waypoint x="2000" y="380" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ConfirmToMerge_di" bpmnElement="Flow_ConfirmToMerge"><di:waypoint x="2100" y="140" /><di:waypoint x="2170" y="140" /><di:waypoint x="2170" y="235" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_RejectToMerge_di" bpmnElement="Flow_RejectToMerge"><di:waypoint x="2100" y="260" /><di:waypoint x="2145" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ExpireToMerge_di" bpmnElement="Flow_ExpireToMerge"><di:waypoint x="2100" y="380" /><di:waypoint x="2170" y="380" /><di:waypoint x="2170" y="285" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToNotify_di" bpmnElement="Flow_ToNotify"><di:waypoint x="2195" y="260" /><di:waypoint x="2240" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToEmail_di" bpmnElement="Flow_ToEmail"><di:waypoint x="2340" y="260" /><di:waypoint x="2380" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_EmailSent_di" bpmnElement="Flow_EmailSent"><di:waypoint x="2480" y="260" /><di:waypoint x="2525" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_EmailFailed_di" bpmnElement="Flow_EmailFailed"><di:waypoint x="2430" y="318" /><di:waypoint x="2430" y="370" /><di:waypoint x="2550" y="370" /><di:waypoint x="2550" y="285" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToRecord_di" bpmnElement="Flow_ToRecord"><di:waypoint x="2575" y="260" /><di:waypoint x="2620" y="260" /></bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToEnd_di" bpmnElement="Flow_ToEnd"><di:waypoint x="2720" y="260" /><di:waypoint x="2772" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEmailReceived_di" bpmnElement="Flow_ToEmailReceived"><di:waypoint x="1580" y="260" /><di:waypoint x="1620" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToApproval_di" bpmnElement="Flow_ToApproval"><di:waypoint x="1720" y="260" /><di:waypoint x="1760" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToSummarize_di" bpmnElement="Flow_ToSummarize"><di:waypoint x="1860" y="260" /><di:waypoint x="1900" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDecision_di" bpmnElement="Flow_ToDecision"><di:waypoint x="2000" y="260" /><di:waypoint x="2045" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved"><di:waypoint x="2070" y="235" /><di:waypoint x="2070" y="140" /><di:waypoint x="2140" y="140" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Rejected_di" bpmnElement="Flow_Rejected"><di:waypoint x="2095" y="260" /><di:waypoint x="2140" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Expired_di" bpmnElement="Flow_Expired"><di:waypoint x="2070" y="285" /><di:waypoint x="2070" y="380" /><di:waypoint x="2140" y="380" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmToMerge_di" bpmnElement="Flow_ConfirmToMerge"><di:waypoint x="2240" y="140" /><di:waypoint x="2310" y="140" /><di:waypoint x="2310" y="235" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RejectToMerge_di" bpmnElement="Flow_RejectToMerge"><di:waypoint x="2240" y="260" /><di:waypoint x="2285" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ExpireToMerge_di" bpmnElement="Flow_ExpireToMerge"><di:waypoint x="2240" y="380" /><di:waypoint x="2310" y="380" /><di:waypoint x="2310" y="285" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToNotify_di" bpmnElement="Flow_ToNotify"><di:waypoint x="2335" y="260" /><di:waypoint x="2380" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEmail_di" bpmnElement="Flow_ToEmail"><di:waypoint x="2480" y="260" /><di:waypoint x="2520" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EmailSent_di" bpmnElement="Flow_EmailSent"><di:waypoint x="2620" y="260" /><di:waypoint x="2665" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EmailFailed_di" bpmnElement="Flow_EmailFailed"><di:waypoint x="2570" y="318" /><di:waypoint x="2570" y="370" /><di:waypoint x="2690" y="370" /><di:waypoint x="2690" y="285" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToRecord_di" bpmnElement="Flow_ToRecord"><di:waypoint x="2715" y="260" /><di:waypoint x="2760" y="260" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEnd_di" bpmnElement="Flow_ToEnd"><di:waypoint x="2860" y="260" /><di:waypoint x="2912" y="260" /></bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>

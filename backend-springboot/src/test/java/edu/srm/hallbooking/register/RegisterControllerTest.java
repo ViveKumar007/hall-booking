@@ -7,30 +7,43 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import edu.srm.hallbooking.config.AppProperties;
 import edu.srm.hallbooking.domain.RegisterSlot;
 import edu.srm.hallbooking.domain.SlotStatus;
 import edu.srm.hallbooking.repository.NotificationRepository;
 import edu.srm.hallbooking.repository.RegisterSlotRepository;
+import edu.srm.hallbooking.security.GoogleUserService;
+import edu.srm.hallbooking.security.SecurityConfig;
+import edu.srm.hallbooking.service.SeedService;
 import java.time.LocalDate;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-/** The register keeps the json-server contract the BPMN's REST connectors and FEEL rely on. */
-@WebMvcTest(RegisterController.class)
-@Import(RegisterMode.class)
+/**
+ * The register keeps the json-server contract the BPMN's REST connectors and FEEL rely on, and only answers callers
+ * that send the shared key (the connectors, with {{secrets.REGISTER_API_KEY}}). No sign-in or CSRF token needed.
+ */
+@WebMvcTest(value = RegisterController.class, properties = "app.register-key=test-key")
+@Import({RegisterMode.class, SecurityConfig.class})
+@EnableConfigurationProperties(AppProperties.class)
 class RegisterControllerTest {
+
+  private static final String KEY = RegisterKeyInterceptor.HEADER;
 
   @Autowired MockMvc mvc;
   @Autowired RegisterMode mode;
   @MockitoBean RegisterSlotRepository slots;
   @MockitoBean NotificationRepository notifications;
+  @MockitoBean GoogleUserService googleUsers;
+  @MockitoBean SeedService seed;
 
   @AfterEach
   void up() {
@@ -42,7 +55,7 @@ class RegisterControllerTest {
     when(slots.findByHallAndDayOrderByStartHourAsc("hall-a", LocalDate.of(2027, 1, 11))).thenReturn(List.of(
         new RegisterSlot("hall-a", LocalDate.of(2027, 1, 11), 10, 12, SlotStatus.CONFIRMED, "Dr. Rao")));
 
-    mvc.perform(get("/register/bookings").param("hall", "hall-a").param("day", "2027-01-11"))
+    mvc.perform(get("/register/bookings").param("hall", "hall-a").param("day", "2027-01-11").header(KEY, "test-key"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$[0].hall").value("hall-a"))
         .andExpect(jsonPath("$[0].day").value("2027-01-11"))
@@ -55,7 +68,7 @@ class RegisterControllerTest {
   void holdSlotCreatesAPendingBooking() throws Exception {
     when(slots.save(any(RegisterSlot.class))).thenAnswer(inv -> inv.getArgument(0));
 
-    mvc.perform(post("/register/bookings").contentType(MediaType.APPLICATION_JSON)
+    mvc.perform(post("/register/bookings").header(KEY, "test-key").contentType(MediaType.APPLICATION_JSON)
             .content("{\"hall\":\"lab-1\",\"day\":\"2027-01-26\",\"startHour\":14,\"endHour\":16,"
                 + "\"status\":\"PENDING\",\"requester\":\"Dr. Test\"}"))
         .andExpect(status().isCreated())
@@ -66,6 +79,20 @@ class RegisterControllerTest {
   @Test
   void downModeAnswers503SoTheConnectorRaisesBookingServiceDown() throws Exception {
     mode.set(RegisterMode.Mode.DOWN);
-    mvc.perform(get("/register/bookings")).andExpect(status().isServiceUnavailable());
+    mvc.perform(get("/register/bookings").header(KEY, "test-key")).andExpect(status().isServiceUnavailable());
+  }
+
+  @Test
+  void callersWithoutTheKeyOrWithAWrongKeyAreTurnedAway() throws Exception {
+    mvc.perform(get("/register/bookings")).andExpect(status().isUnauthorized());
+    mvc.perform(get("/register/bookings").header(KEY, "guess")).andExpect(status().isUnauthorized());
+    mvc.perform(post("/register/bookings").contentType(MediaType.APPLICATION_JSON).content("{}"))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void theKeyIsCheckedBeforeTheOutageSwitch() throws Exception {
+    mode.set(RegisterMode.Mode.DOWN);
+    mvc.perform(get("/register/bookings")).andExpect(status().isUnauthorized());
   }
 }

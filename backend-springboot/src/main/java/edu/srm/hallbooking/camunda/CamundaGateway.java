@@ -54,10 +54,13 @@ public class CamundaGateway {
     return client.newProcessInstanceGetRequest(processInstanceKey).send().join();
   }
 
-  /** The Hall Approval instances a booking's Call Activity started, oldest first (one per approver asked). */
-  public List<ProcessInstance> children(long parentKey) {
+  /**
+   * The Hall Approval instances a booking's Call Activity started, oldest first (one per approver asked). The booking
+   * also calls Send email; those children are left out.
+   */
+  public List<ProcessInstance> approvals(long parentKey) {
     return client.newProcessInstanceSearchRequest()
-        .filter(f -> f.parentProcessInstanceKey(parentKey))
+        .filter(f -> f.parentProcessInstanceKey(parentKey).processDefinitionId(APPROVAL_PROCESS))
         .sort(s -> s.startDate().asc())
         .page(p -> p.limit(20))
         .send()
@@ -128,6 +131,11 @@ public class CamundaGateway {
         .send()
         .join()
         .items();
+  }
+
+  /** One user task by its key (any state). */
+  public UserTask task(long userTaskKey) {
+    return client.newUserTaskGetRequest(userTaskKey).send().join();
   }
 
   public void completeTask(long userTaskKey, Map<String, Object> variables) {

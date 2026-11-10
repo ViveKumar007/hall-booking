@@ -1,0 +1,149 @@
+/* Hall Booking: a college booking office. Paper-white desk, stamp-pad violet ink, DIN signage lettering
+   (Bahnschrift ships with Windows). Signature: the two-lane routing slip on a request's page.
+   Tailwind 4: the design tokens below become utilities (bg-paper, text-ink-2, border-rule, font-display, ...). */
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #f2f4f8;
+  --color-card: #ffffff;
+  --color-ink: #151c2c;
+  --color-ink-2: #4b5568;
+  --color-ink-3: #788296;
+  --color-rule: #dde2ea;
+  --color-rule-2: #c7cedb;
+  --color-accent: #4535b0;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: #ebe8fa;
+  --color-ok: #17734a;
+  --color-ok-soft: #e2f2e9;
+  --color-bad: #b42318;
+  --color-bad-soft: #fbe7e5;
+  --color-warn: #965207;
+  --color-warn-soft: #fbefdc;
+  --color-idle: #5b6475;
+  --color-idle-soft: #eceef2;
+  --color-live: #1d5ec0;
+  --color-live-soft: #e5edfb;
+  --color-lane-desk: #f6f7fb;
+  --color-lane-admin: #f5f2fc;
+  --font-display: "Bahnschrift SemiCondensed", "Bahnschrift", "DIN Alternate", "Arial Narrow", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  --shadow-card: 0 1px 2px rgba(21, 28, 44, .06), 0 2px 8px rgba(21, 28, 44, .04);
+}
+
+/* Unlayered, so it wins over the theme layer. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-paper: #11141c; --color-card: #191e2a; --color-ink: #e8ebf2; --color-ink-2: #a6afc0; --color-ink-3: #7c8699;
+    --color-rule: #283041; --color-rule-2: #364055;
+    --color-accent: #9d8ff5; --color-accent-ink: #151035; --color-accent-soft: #2a2550;
+    --color-ok: #5fcb94; --color-ok-soft: #173326; --color-bad: #f2877c; --color-bad-soft: #3a1c1a;
+    --color-warn: #e7ae5b; --color-warn-soft: #3a2a12; --color-idle: #a2abbd; --color-idle-soft: #262c39;
+    --color-live: #86b3f7; --color-live-soft: #1b2a45;
+    --color-lane-desk: #161b26; --color-lane-admin: #1a1729;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .3);
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  html, body { margin: 0; }
+  body { background: var(--color-paper); color: var(--color-ink); font: 15px/1.5 var(--font-body); }
+  a { color: var(--color-accent); }
+  h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: .005em; }
+  h1 { font-size: 30px; line-height: 1.1; }
+  h2 { font-size: 19px; }
+  h3 { font-size: 16px; }
+  :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  input, select, textarea {
+    font: 15px var(--font-body); color: var(--color-ink); background: var(--color-card);
+    border: 1px solid var(--color-rule-2); border-radius: 6px; padding: 8px 10px; width: 100%;
+  }
+  textarea { resize: vertical; min-height: 64px; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--color-accent); outline-offset: 0; border-color: var(--color-accent); }
+  input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--color-bad); }
+}
+
+@layer components {
+  .eyebrow { font: 600 12px var(--font-display); text-transform: uppercase; letter-spacing: .1em; color: var(--color-ink-3); }
+  .panel { background: var(--color-card); border: 1px solid var(--color-rule); border-radius: 8px; box-shadow: var(--shadow-card); padding: 18px 20px; min-width: 0; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 16px; border-radius: 7px;
+    border: 1px solid var(--color-rule-2); background: var(--color-card); color: var(--color-ink);
+    font: 600 14px var(--font-body); cursor: pointer; text-decoration: none; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--color-ink-3); }
+  .btn-primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink); }
+  .btn-ok { background: var(--color-ok); border-color: var(--color-ok); color: var(--color-card); }
+  .btn-bad { border-color: var(--color-bad); color: var(--color-bad); }
+  .btn-ghost { border-color: transparent; background: transparent; color: var(--color-ink-2); }
+  .btn:disabled { opacity: .55; cursor: progress; }
+  .btn-sm { padding: 5px 10px; font-size: 13px; }
+
+  /* stamps: the status chips; "big" is the rubber stamp at the end of a route */
+  .stamp {
+    --t: var(--color-idle); --ts: var(--color-idle-soft);
+    display: inline-block; padding: 2px 8px; border: 1.5px solid var(--t); border-radius: 4px; color: var(--t); background: var(--ts);
+    font: 600 12px/1.4 var(--font-display); text-transform: uppercase; letter-spacing: .09em; white-space: nowrap;
+  }
+  .tone-ok { --t: var(--color-ok); --ts: var(--color-ok-soft); }
+  .tone-bad { --t: var(--color-bad); --ts: var(--color-bad-soft); }
+  .tone-warn { --t: var(--color-warn); --ts: var(--color-warn-soft); }
+  .tone-idle { --t: var(--color-idle); --ts: var(--color-idle-soft); }
+  .tone-live { --t: var(--color-live); --ts: var(--color-live-soft); }
+  .stamp-big {
+    font-size: 26px; letter-spacing: .14em; padding: 6px 18px; border-width: 3px; background: transparent;
+    box-shadow: inset 0 0 0 3px var(--color-card), inset 0 0 0 4.5px var(--t); transform: rotate(-5deg);
+  }
+
+  /* room board: one track per venue, 08:00-18:00 */
+  .track {
+    position: relative; display: grid; grid-template-columns: repeat(10, 1fr); min-height: 46px; border-radius: 6px;
+    background: repeating-linear-gradient(to right, var(--color-rule) 0 1px, transparent 1px 10%), var(--color-lane-desk);
+    border: 1px solid var(--color-rule);
+  }
+  .slot {
+    grid-row: 1; align-self: center; margin: 4px 2px; min-height: 36px; padding: 4px 8px; border-radius: 5px; overflow: hidden;
+    font-size: 12.5px; line-height: 1.25; display: grid; align-content: center; border: 1px solid; white-space: nowrap;
+  }
+  .slot b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .slot-confirmed { background: var(--color-ok-soft); border-color: var(--color-ok); color: var(--color-ok); }
+  .slot-pending { background: repeating-linear-gradient(135deg, var(--color-live-soft) 0 6px, var(--color-card) 6px 12px); border-color: var(--color-live); color: var(--color-live); }
+  .slot-proposed { background: color-mix(in srgb, var(--color-accent-soft) 85%, transparent); border: 2px dashed var(--color-accent); color: var(--color-accent); z-index: 1; }
+  .slot-clash { border-color: var(--color-bad); color: var(--color-bad); background: color-mix(in srgb, var(--color-bad-soft) 85%, transparent); }
+  .swatch { display: inline-block; width: 18px; height: 11px; border-radius: 3px; border: 1px solid; vertical-align: -1px; margin-right: 5px; }
+
+  /* the routing slip: two lanes, hand-overs drawn as arrows across the gutter */
+  .slip-grid { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr); }
+  .step {
+    position: relative; margin: 0 10px; padding: 9px 12px; border-radius: 7px; background: var(--color-card);
+    border: 1px solid var(--color-rule); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 10px;
+    animation: rise .25s ease-out both;
+  }
+  .step-active { border-color: var(--color-live); box-shadow: 0 0 0 3px var(--color-live-soft); }
+  .step-active b::after {
+    content: "now"; margin-left: 8px; padding: 1px 6px; border-radius: 4px; background: var(--color-live); color: var(--color-card);
+    font: 600 11px var(--font-body); text-transform: uppercase; letter-spacing: .06em; animation: pulse 1.4s ease-in-out infinite;
+  }
+  .step-terminated { opacity: .7; }
+  .step-terminated b { text-decoration: line-through; text-decoration-color: var(--color-ink-3); }
+  .step-handover { border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-rule)); }
+  .out-desk::after, .out-admin::after { content: ""; position: absolute; top: 50%; width: 64px; border-top: 2px dashed var(--color-accent); }
+  .out-desk::after { left: 100%; margin-left: 1px; }
+  .out-admin::after { right: 100%; margin-right: 1px; }
+  .in-admin::before, .in-desk::before { content: ""; position: absolute; top: calc(50% - 6px); border: 6px solid transparent; }
+  .in-admin::before { right: 100%; border-left-color: var(--color-accent); }
+  .in-desk::before { left: 100%; border-right-color: var(--color-accent); }
+
+  .bar-fill { height: 100%; background: var(--color-live); transition: width 1s linear; }
+  .bar-late { background: var(--color-warn); }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+  @keyframes pulse { 50% { opacity: .45; } }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

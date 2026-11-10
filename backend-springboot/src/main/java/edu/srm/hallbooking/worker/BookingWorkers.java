@@ -96,7 +96,7 @@ public class BookingWorkers {
     String sessions = in.sessions() == null ? "" : in.sessions().stream()
         .map(s -> "- " + ValidationService.describe(s)).collect(Collectors.joining("\n"));
     String message = in.requesterName() + " asked for these sessions, for " + in.attendees() + " people:\n" + sessions
-        + "\nPlease approve or reject it in the Hall Booking inbox. It expires automatically after 2 minutes.";
+        + "\nPlease approve or reject it in the Hall Booking inbox. It expires automatically if nobody decides in time.";
     notifications.save(new Notification(NotificationKind.REMINDER, in.approverRole(),
         "Reminder: booking " + in.bookingRef() + " is waiting for your review", message, in.bookingRef(),
         job.getProcessInstanceKey(), null, null, Instant.now(clock)));

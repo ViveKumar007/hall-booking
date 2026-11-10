@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_SendEmail" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.49.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.8.0">
+  <bpmn:error id="Error_SendFailed" name="Email failed" errorCode="EMAIL_FAILED" />
+  <bpmn:process id="send-email" name="Send email" isExecutable="true">
+    <bpmn:documentation>Reusable child process for the update emails, called by hall-booking (request received, service issue) and hall-approval (review waiting, reminder). In: to (an address) or toRole (an approver role, or admin), subject, body, link (a page of the app, e.g. /#/inbox). Out: emailStatus (SENT, FAILED or NO_RECIPIENT), recipients, emailError.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_Email" name="Email requested">
+      <bpmn:outgoing>Flow_ToFindRecipients</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Worker_FindRecipients" name="Find recipients">
+      <bpmn:documentation>Job worker (Spring Boot): turns toRole into the Google accounts holding that role (APP_ACCOUNTS), falling back to the admins when nobody holds it, and the link into a full URL (APP_URL).</bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="resolve-recipients" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToFindRecipients</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToAnyone</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_AnyRecipient" name="Anyone to email?" default="Flow_Nobody">
+      <bpmn:incoming>Flow_ToAnyone</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToSend</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Nobody</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Email_Send" name="Send email" zeebe:modelerTemplate="io.camunda.connectors.email.v1" zeebe:modelerTemplateVersion="3">
+      <bpmn:documentation>Email Outbound Connector (SMTP). Server, port, login and sender come from connector secrets. A failure becomes BPMN error EMAIL_FAILED: the caller carries on and sees emailStatus FAILED.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="io.camunda:email:1" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="simple" target="authentication.type" />
+          <zeebe:input source="{{secrets.SMTP_USERNAME}}" target="authentication.username" />
+          <zeebe:input source="{{secrets.SMTP_PASSWORD}}" target="authentication.password" />
+          <zeebe:input source="smtp" target="protocol" />
+          <zeebe:input source="{{secrets.SMTP_HOST}}" target="data.smtpConfig.smtpHost" />
+          <zeebe:input source="{{secrets.SMTP_PORT}}" target="data.smtpConfig.smtpPort" />
+          <zeebe:input source="{{secrets.SMTP_SECURITY}}" target="data.smtpConfig.smtpCryptographicProtocol" />
+          <zeebe:input source="sendEmailSmtp" target="data.smtpActionDiscriminator" />
+          <zeebe:input source="{{secrets.MAIL_FROM}}" target="data.smtpAction.from" />
+          <zeebe:input source="=recipients" target="data.smtpAction.to" />
+          <zeebe:input source="=subject" target="data.smtpAction.subject" />
+          <zeebe:input source="PLAIN" target="data.smtpAction.contentType" />
+          <zeebe:input source="=body + (if linkUrl = null then &#34;&#34; else &#34;\n\nOpen Hall Booking: &#34; + linkUrl)" target="data.smtpAction.body" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="elementTemplateVersion" value="3" />
+          <zeebe:header key="elementTemplateId" value="io.camunda.connectors.email.v1" />
+          <zeebe:header key="resultExpression" value="={emailStatus: &#34;SENT&#34;}" />
+          <zeebe:header key="errorExpression" value="=if error != null then bpmnError(&#34;EMAIL_FAILED&#34;, &#34;Email could not be sent&#34;, {emailError: error.message}) else null" />
+          <zeebe:header key="retryBackoff" value="PT0S" />
+        </zeebe:taskHeaders>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToSend</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToSent</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:boundaryEvent id="Boundary_SendFailed" name="Email failed" attachedToRef="Email_Send">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:output source="=emailError" target="emailError" />
+          <zeebe:output source="=&#34;FAILED&#34;" target="emailStatus" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_ToFailed</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_SendFailed" errorRef="Error_SendFailed" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="End_Sent" name="Email sent">
+      <bpmn:incoming>Flow_ToSent</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="End_Failed" name="Not delivered">
+      <bpmn:incoming>Flow_ToFailed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="End_Nobody" name="Nobody to email">
+      <bpmn:incoming>Flow_Nobody</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_ToFindRecipients" sourceRef="StartEvent_Email" targetRef="Worker_FindRecipients" />
+    <bpmn:sequenceFlow id="Flow_ToAnyone" sourceRef="Worker_FindRecipients" targetRef="Gateway_AnyRecipient" />
+    <bpmn:sequenceFlow id="Flow_ToSend" name="Yes" sourceRef="Gateway_AnyRecipient" targetRef="Email_Send">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=recipientCount &gt; 0</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Nobody" name="No" sourceRef="Gateway_AnyRecipient" targetRef="End_Nobody" />
+    <bpmn:sequenceFlow id="Flow_ToSent" sourceRef="Email_Send" targetRef="End_Sent" />
+    <bpmn:sequenceFlow id="Flow_ToFailed" sourceRef="Boundary_SendFailed" targetRef="End_Failed" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_SendEmail">
+    <bpmndi:BPMNPlane id="BPMNPlane_SendEmail" bpmnElement="send-email">
+      <bpmndi:BPMNShape id="StartEvent_Email_di" bpmnElement="StartEvent_Email"><dc:Bounds x="152" y="182" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="131" y="225" width="78" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Worker_FindRecipients_di" bpmnElement="Worker_FindRecipients"><dc:Bounds x="240" y="160" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_AnyRecipient_di" bpmnElement="Gateway_AnyRecipient" isMarkerVisible="true"><dc:Bounds x="395" y="175" width="50" height="50" /><bpmndi:BPMNLabel><dc:Bounds x="377" y="151" width="86" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Email_Send_di" bpmnElement="Email_Send"><dc:Bounds x="500" y="160" width="100" height="80" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Sent_di" bpmnElement="End_Sent"><dc:Bounds x="662" y="182" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="654" y="225" width="52" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Failed_di" bpmnElement="End_Failed"><dc:Bounds x="662" y="292" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="647" y="335" width="66" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Nobody_di" bpmnElement="End_Nobody"><dc:Bounds x="402" y="292" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="379" y="335" width="82" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_SendFailed_di" bpmnElement="Boundary_SendFailed"><dc:Bounds x="532" y="222" width="36" height="36" /><bpmndi:BPMNLabel><dc:Bounds x="568" y="262" width="58" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ToFindRecipients_di" bpmnElement="Flow_ToFindRecipients"><di:waypoint x="188" y="200" /><di:waypoint x="240" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToAnyone_di" bpmnElement="Flow_ToAnyone"><di:waypoint x="340" y="200" /><di:waypoint x="395" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToSend_di" bpmnElement="Flow_ToSend"><di:waypoint x="445" y="200" /><di:waypoint x="500" y="200" /><bpmndi:BPMNLabel><dc:Bounds x="463" y="182" width="19" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Nobody_di" bpmnElement="Flow_Nobody"><di:waypoint x="420" y="225" /><di:waypoint x="420" y="292" /><bpmndi:BPMNLabel><dc:Bounds x="428" y="252" width="15" height="14" /></bpmndi:BPMNLabel></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToSent_di" bpmnElement="Flow_ToSent"><di:waypoint x="600" y="200" /><di:waypoint x="662" y="200" /></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToFailed_di" bpmnElement="Flow_ToFailed"><di:waypoint x="550" y="258" /><di:waypoint x="550" y="310" /><di:waypoint x="662" y="310" /></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
